@@ -1,0 +1,43 @@
+{
+  "common": {
+    "appName": "云信会议",
+    "connecting": "连接中...",
+    "cancel": "取消",
+    "confirm": "确认",
+    "back": "返回",
+    "loading": "加载中..."
+  },
+  "onboarding": {
+    "title": "实时音视频会议",
+    "subtitle": "基于 LiveKit SFU 架构与高性能 WebRTC 的现代化音视频协同。",
+    "getStarted": "立即开始"
+  },
+  "home": {
+    "title": "云信会议中心",
+    "welcome": "欢迎回来",
+    "newMeeting": "发起会议",
+    "joinMeeting": "加入会议",
+    "roomNamePlaceholder": "输入会议房间号",
+    "displayNamePlaceholder": "输入您的姓名",
+    "quickJoin": "加入房间",
+    "createRoom": "创建房间",
+    "recentRooms": "最近会议"
+  },
+  "meeting": {
+    "connectingRoom": "正在连接会议室...",
+    "waitingParticipants": "等待其他参会者加入...",
+    "muteMic": "静音",
+    "unmuteMic": "开启麦克风",
+    "turnCameraOff": "关闭摄像头",
+    "turnCameraOn": "开启摄像头",
+    "leaveRoom": "离开会议",
+    "screenShare": "屏幕共享",
+    "participants": "参会人员"
+  },
+  "errors": {
+    "connectionFailed": "加入会议失败，请检查网络或配置。",
+    "invalidRoom": "请输入有效的房间名称。",
+    "networkError": "网络连接失败，请确认 API 服务端正常运行。"
+  }
+}
+

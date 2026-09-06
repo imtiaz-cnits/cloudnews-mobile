@@ -1,0 +1,43 @@
+{
+  "common": {
+    "appName": "Cloud News",
+    "connecting": "Connecting...",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "back": "Back",
+    "loading": "Loading..."
+  },
+  "onboarding": {
+    "title": "Real-Time Video Conferencing",
+    "subtitle": "Decoupled SFU architecture powered by LiveKit and high-performance WebRTC.",
+    "getStarted": "Get Started"
+  },
+  "home": {
+    "title": "Cloud News Meet",
+    "welcome": "Welcome back",
+    "newMeeting": "New Meeting",
+    "joinMeeting": "Join with Code",
+    "roomNamePlaceholder": "Enter room name",
+    "displayNamePlaceholder": "Enter your name",
+    "quickJoin": "Join Room",
+    "createRoom": "Create Room",
+    "recentRooms": "Recent Rooms"
+  },
+  "meeting": {
+    "connectingRoom": "Connecting to room...",
+    "waitingParticipants": "Waiting for others to join...",
+    "muteMic": "Mute",
+    "unmuteMic": "Unmute",
+    "turnCameraOff": "Camera Off",
+    "turnCameraOn": "Camera On",
+    "leaveRoom": "Leave",
+    "screenShare": "Share Screen",
+    "participants": "Participants"
+  },
+  "errors": {
+    "connectionFailed": "Failed to connect to the meeting room.",
+    "invalidRoom": "Please provide a valid room name.",
+    "networkError": "Network request failed. Check your API server connection."
+  }
+}
+
