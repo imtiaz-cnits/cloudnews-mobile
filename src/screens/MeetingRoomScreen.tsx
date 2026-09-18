@@ -102,6 +102,7 @@ import {
 } from '../utils/wakeLock';
 import { startAudioSession, stopAudioSession } from '../services/livekit';
 import { MediaPreviewModal, MediaPreviewItem, sanitizeMediaUrl } from '../components/meeting/MediaPreviewModal';
+import { enterPictureInPicture, setPipConfig, addPipListener } from '../utils/pip';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -302,64 +303,66 @@ const ParticipantCard: React.FC<{
         />
 
         {/* Top badges and action buttons */}
-        <View
-          style={[
-            styles.cardTopRow,
-            isSingleOrFullScreen
-              ? { top: (insets?.top ?? 0) + (showControls ? 64 : 16) }
-              : { top: 10 },
-          ]}
-          pointerEvents="box-none"
-        >
-          <View style={styles.leftBadgeContainer} pointerEvents="box-none">
-            {onAudioPress && isSingleOrFullScreen && (
-              <TouchableOpacity
-                style={styles.actionIconBtn}
-                onPress={onAudioPress}
-                hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
-                activeOpacity={0.7}
-              >
-                {renderAudioIcon ? renderAudioIcon() : <Volume2 color="#00A8FF" size={20} />}
-              </TouchableOpacity>
-            )}
-            {isHost && (
-              <View style={styles.hostBadge}>
-                <Text style={styles.hostBadgeText}>{t('meeting.host')}</Text>
-              </View>
-            )}
-          </View>
+        {showControls && (
+          <View
+            style={[
+              styles.cardTopRow,
+              isSingleOrFullScreen
+                ? { top: (insets?.top ?? 0) + (showControls ? 64 : 16) }
+                : { top: 10 },
+            ]}
+            pointerEvents="box-none"
+          >
+            <View style={styles.leftBadgeContainer} pointerEvents="box-none">
+              {onAudioPress && isSingleOrFullScreen && (
+                <TouchableOpacity
+                  style={styles.actionIconBtn}
+                  onPress={onAudioPress}
+                  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                  activeOpacity={0.7}
+                >
+                  {renderAudioIcon ? renderAudioIcon() : <Volume2 color="#00A8FF" size={20} />}
+                </TouchableOpacity>
+              )}
+              {isHost && (
+                <View style={styles.hostBadge}>
+                  <Text style={styles.hostBadgeText}>{t('meeting.host')}</Text>
+                </View>
+              )}
+            </View>
 
-          <View style={styles.rightBadgeActions} pointerEvents="auto">
-            {isLocal && isCameraEnabled && (
-              <TouchableOpacity
-                style={styles.actionIconBtn}
-                onPress={() => {
-                  console.log('[CameraSwitch] Button pressed in ParticipantCard!');
-                  onSwitchCamera?.();
-                }}
-                hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
-                activeOpacity={0.7}
-              >
-                <SwitchCamera color="#FFF" size={20} />
-              </TouchableOpacity>
-            )}
+            <View style={styles.rightBadgeActions} pointerEvents="auto">
+              {isLocal && isCameraEnabled && (
+                <TouchableOpacity
+                  style={styles.actionIconBtn}
+                  onPress={() => {
+                    console.log('[CameraSwitch] Button pressed in ParticipantCard!');
+                    onSwitchCamera?.();
+                  }}
+                  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                  activeOpacity={0.7}
+                >
+                  <SwitchCamera color="#FFF" size={20} />
+                </TouchableOpacity>
+              )}
 
-            {onToggleLayout && (
-              <TouchableOpacity
-                style={styles.actionIconBtn}
-                onPress={onToggleLayout}
-                hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
-                activeOpacity={0.7}
-              >
-                {isGridMode ? (
-                  <Maximize2 color="#FFF" size={20} />
-                ) : (
-                  <LayoutGrid color="#FFF" size={20} />
-                )}
-              </TouchableOpacity>
-            )}
+              {onToggleLayout && (
+                <TouchableOpacity
+                  style={styles.actionIconBtn}
+                  onPress={onToggleLayout}
+                  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                  activeOpacity={0.7}
+                >
+                  {isGridMode ? (
+                    <Maximize2 color="#FFF" size={20} />
+                  ) : (
+                    <LayoutGrid color="#FFF" size={20} />
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
-        </View>
+        )}
       </View>
     );
   };
@@ -869,21 +872,18 @@ export const MeetingRoomContent: React.FC<{
   const room = useRoomContext();
   const { t } = useTranslation();
 
-  // Intercept hardware/system back button to minimize into floating PiP
+  const [isNativePip, setIsNativePip] = useState<boolean>(false);
+
+  // Subscribe to native Android Picture-in-Picture mode changes
   useEffect(() => {
-    if (isMinimized) return;
-
-    const backAction = () => {
-      if (onMinimize) {
-        onMinimize();
-        return true;
-      }
-      return false;
+    const unsubscribe = addPipListener(inPip => {
+      console.log('[PiP] Native Picture-in-Picture state changed:', inPip);
+      setIsNativePip(inPip);
+    });
+    return () => {
+      unsubscribe();
     };
-
-    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
-    return () => backHandler.remove();
-  }, [isMinimized, onMinimize]);
+  }, []);
 
   const getAudioDeviceDisplay = useCallback((deviceId: string) => {
     switch (deviceId) {
@@ -1156,6 +1156,48 @@ export const MeetingRoomContent: React.FC<{
 
     return screenShareTracks.find(t => Boolean(t.publication));
   }, [screenShareTracks, localParticipant, isScreenSharing]);
+
+  // Determine if any screen share (local or remote) is currently active
+  const isScreenShareActive = useMemo(() => {
+    return Boolean(isScreenSharing || activeScreenShare);
+  }, [isScreenSharing, activeScreenShare]);
+
+  // Synchronize Picture-in-Picture configuration with Android OS:
+  // When in meeting and screen share is OFF -> PiP enabled (auto-enter on minimize / swipe home).
+  // When screen share is ON -> PiP disabled so user can present other apps.
+  useEffect(() => {
+    setPipConfig(true, isScreenShareActive);
+    return () => {
+      setPipConfig(false, false);
+    };
+  }, [isScreenShareActive]);
+
+  // Intercept hardware/system back button to enter native Android Picture-in-Picture mode
+  useEffect(() => {
+    if (isMinimized) return;
+
+    const backAction = () => {
+      // 1. If screen share is active, do NOT enter PiP
+      if (isScreenShareActive) {
+        if (onMinimize) {
+          onMinimize();
+          return true;
+        }
+        return false;
+      }
+
+      // 2. If screen share is NOT active, enter native Android Picture-in-Picture mode
+      enterPictureInPicture().then(entered => {
+        if (!entered && onMinimize) {
+          onMinimize();
+        }
+      });
+      return true;
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => backHandler.remove();
+  }, [isMinimized, onMinimize, isScreenShareActive]);
 
   // Auto-subscribe to remote screen share tracks as soon as they are announced
   useEffect(() => {
@@ -2374,74 +2416,82 @@ export const MeetingRoomContent: React.FC<{
       )}
 
       {/* --- TOP HEADER --- */}
-      <Animated.View
-        pointerEvents={showControls ? 'auto' : 'none'}
-        style={[
-          styles.header,
-          {
-            paddingTop: insets.top + 8,
-            opacity: controlsOpacity,
-            transform: [{ translateY: headerTranslateY }],
-          },
-        ]}
-      >
-        <View style={styles.headerLeft}>
-          {isGridMode && (
+      {!isNativePip && (
+        <Animated.View
+          pointerEvents={showControls ? 'auto' : 'none'}
+          style={[
+            styles.header,
+            {
+              paddingTop: insets.top + 8,
+              opacity: controlsOpacity,
+              transform: [{ translateY: headerTranslateY }],
+            },
+          ]}
+        >
+          <View style={styles.headerLeft}>
+            {isGridMode && (
+              <TouchableOpacity
+                style={styles.headerIconBtn}
+                onPress={() => {
+                  resetControlsTimer();
+                  fetchAudioOutputs(false);
+                  setIsAudioModalOpen(true);
+                }}
+                activeOpacity={0.7}
+              >
+                {renderCurrentAudioIcon()}
+              </TouchableOpacity>
+            )}
+
+            {/* Back arrow to enter PiP (or minimize if screen sharing) */}
             <TouchableOpacity
               style={styles.headerIconBtn}
               onPress={() => {
                 resetControlsTimer();
-                fetchAudioOutputs(false);
-                setIsAudioModalOpen(true);
+                if (!isScreenShareActive) {
+                  enterPictureInPicture().then(entered => {
+                    if (!entered && onMinimize) {
+                      onMinimize();
+                    }
+                  });
+                } else if (onMinimize) {
+                  onMinimize();
+                }
               }}
               activeOpacity={0.7}
             >
-              {renderCurrentAudioIcon()}
+              <ChevronLeft color="#FFF" size={20} />
             </TouchableOpacity>
-          )}
-
-          {/* User Request 1: Replace camera flip with back arrow to minimize into floating PiP */}
+          </View>
           <TouchableOpacity
-            style={styles.headerIconBtn}
+            style={styles.headerCenter}
             onPress={() => {
               resetControlsTimer();
-              if (onMinimize) {
-                onMinimize();
-              }
+              setIsInfoModalOpen(true);
             }}
             activeOpacity={0.7}
           >
-            <ChevronLeft color="#FFF" size={20} />
+            <View style={styles.titleRow}>
+              <Text style={styles.meetingTitle}>{displayTitle || 'Meeting'}</Text>
+              <ChevronDown color="#94a3b8" size={14} />
+            </View>
+            <Text style={styles.timerText}>{formatTime(callDuration)}</Text>
           </TouchableOpacity>
-        </View>
-        <TouchableOpacity
-          style={styles.headerCenter}
-          onPress={() => {
-            resetControlsTimer();
-            setIsInfoModalOpen(true);
-          }}
-          activeOpacity={0.7}
-        >
-          <View style={styles.titleRow}>
-            <Text style={styles.meetingTitle}>{displayTitle || 'Meeting'}</Text>
-            <ChevronDown color="#94a3b8" size={14} />
-          </View>
-          <Text style={styles.timerText}>{formatTime(callDuration)}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.leaveBtn}
-          onPress={() => {
-            resetControlsTimer();
-            setIsLeaveModalOpen(true);
-          }}
-        >
-          <LogOut color="#ef4444" size={16} />
-          <Text style={styles.leaveText}>{t('meeting.leave')}</Text>
-        </TouchableOpacity>
-      </Animated.View>
+          <TouchableOpacity
+            style={styles.leaveBtn}
+            onPress={() => {
+              resetControlsTimer();
+              setIsLeaveModalOpen(true);
+            }}
+          >
+            <LogOut color="#ef4444" size={16} />
+            <Text style={styles.leaveText}>{t('meeting.leave')}</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      )}
 
       {/* --- FLOATING SCREEN SHARE STOP BANNER (One-Tap In-App Stop) --- */}
-      {isScreenSharing && (isGridMode || pinnedParticipantIdentity || !activeScreenShare) && (
+      {!isNativePip && isScreenSharing && (isGridMode || pinnedParticipantIdentity || !activeScreenShare) && (
         <View
           style={[
             styles.floatingScreenShareBanner,
@@ -2471,7 +2521,7 @@ export const MeetingRoomContent: React.FC<{
       <View
         style={[
           styles.gridContainer,
-          isFullScreen ? styles.fullScreenGridContainer : [
+          (isFullScreen || isNativePip) ? styles.fullScreenGridContainer : [
             styles.multiGridContainer,
             { paddingTop: insets.top + 68, paddingBottom: insets.bottom + 92 },
           ],
@@ -2481,7 +2531,7 @@ export const MeetingRoomContent: React.FC<{
           <ScreenShareView
             track={activeScreenShare}
             insets={insets}
-            showControls={showControls}
+            showControls={isNativePip ? false : showControls}
             isGridMode={isGridMode}
             onToggleLayout={handleToggleLayout}
             onAudioPress={() => {
@@ -2505,7 +2555,7 @@ export const MeetingRoomContent: React.FC<{
             isLocal={true}
             cameraFacing={cameraFacing}
             isSingleOrFullScreen={true}
-            showControls={showControls}
+            showControls={isNativePip ? false : showControls}
             isGridMode={false}
             onToggleLayout={handleToggleLayout}
             onAudioPress={() => {
@@ -2526,7 +2576,7 @@ export const MeetingRoomContent: React.FC<{
             isLocal={localParticipant && pinnedParticipantIdentity === localParticipant.identity}
             cameraFacing={cameraFacing}
             isSingleOrFullScreen={true}
-            showControls={showControls}
+            showControls={isNativePip ? false : showControls}
             isGridMode={false}
             onToggleLayout={handleToggleLayout}
             onAudioPress={() => {
@@ -2553,7 +2603,7 @@ export const MeetingRoomContent: React.FC<{
                 isLocal={localParticipant && p.identity === localParticipant.identity}
                 cameraFacing={cameraFacing}
                 isSingleOrFullScreen={false}
-                showControls={showControls}
+                showControls={isNativePip ? false : showControls}
                 isGridMode={true}
                 onToggleLayout={handleToggleLayout}
                 insets={insets}
@@ -2573,7 +2623,7 @@ export const MeetingRoomContent: React.FC<{
       </View>
 
       {/* --- CHAT DRAWER --- */}
-      {isChatOpen && (
+      {!isNativePip && isChatOpen && (
         <View style={[styles.drawer, { paddingTop: insets.top }]}>
           <View style={styles.dragHandleWrapper}><View style={styles.dragHandle} /></View>
           <View style={styles.drawerHeader}>
@@ -2839,7 +2889,7 @@ export const MeetingRoomContent: React.FC<{
       )}
 
       {/* --- PARTICIPANTS DRAWER --- */}
-      {isParticipantsOpen && (
+      {!isNativePip && isParticipantsOpen && (
         <View style={[styles.drawer, { paddingTop: insets.top }]}>
           <View style={styles.dragHandleWrapper}><View style={styles.dragHandle} /></View>
           <View style={styles.drawerHeader}>
@@ -2955,126 +3005,128 @@ export const MeetingRoomContent: React.FC<{
       )}
 
       {/* --- BOTTOM CONTROLS --- */}
-      <Animated.View
-        pointerEvents={showControls ? 'auto' : 'none'}
-        style={[
-          styles.footer,
-          {
-            paddingBottom: insets.bottom + 14,
-            opacity: controlsOpacity,
-            transform: [{ translateY: footerTranslateY }],
-          },
-        ]}
-      >
-        <View style={styles.controlsDock}>
-          <TouchableOpacity
-            style={styles.controlItem}
-            onPress={() => {
-              resetControlsTimer();
-              handleToggleMic();
-            }}
-          >
-            <View style={[styles.controlIconBox, isMicMuted && styles.controlIconBoxMuted]}>
-              {isMicMuted ? <MicOff color="#ef4444" size={22} /> : <Mic color="#10b981" size={22} />}
-            </View>
-            <Text style={styles.controlLabel}>{isMicMuted ? t('meeting.unmute') : t('meeting.mute')}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.controlItem}
-            onPress={() => {
-              resetControlsTimer();
-              handleToggleCamera();
-            }}
-          >
-            <View style={[styles.controlIconBox, isCameraOff && styles.controlIconBoxMuted]}>
-              {isCameraOff ? <VideoOff color="#ef4444" size={22} /> : <LucideVideo color="#10b981" size={22} />}
-            </View>
-            <Text style={styles.controlLabel}>{isCameraOff ? t('meeting.startVideo') : t('meeting.stopVideo')}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.controlItem}
-            onPress={() => {
-              resetControlsTimer();
-              setIsChatOpen(true);
-              setUnreadChatCount(0);
-            }}
-          >
-            <View style={styles.controlIconBox}>
-              <MessageSquare color="#00A8FF" size={22} />
-              {unreadChatCount > 0 && (
-                <View style={styles.chatBadge}>
-                  <Text style={styles.chatBadgeText}>
-                    {unreadChatCount > 99 ? '99+' : unreadChatCount}
-                  </Text>
-                </View>
-              )}
-            </View>
-            <Text style={styles.controlLabel}>{t('meeting.chat')}</Text>
-          </TouchableOpacity>
-
-          {(allParticipants.length > 1 || isScreenSharing) && (
+      {!isNativePip && (
+        <Animated.View
+          pointerEvents={showControls ? 'auto' : 'none'}
+          style={[
+            styles.footer,
+            {
+              paddingBottom: insets.bottom + 14,
+              opacity: controlsOpacity,
+              transform: [{ translateY: footerTranslateY }],
+            },
+          ]}
+        >
+          <View style={styles.controlsDock}>
             <TouchableOpacity
               style={styles.controlItem}
               onPress={() => {
                 resetControlsTimer();
-                handleToggleScreenShare();
+                handleToggleMic();
               }}
-              activeOpacity={0.8}
             >
-              <View
-                style={[
-                  styles.controlIconBox,
-                  isScreenSharing && {
-                    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-                    borderColor: '#ef4444',
-                  },
-                ]}
-              >
-                {isScreenSharing ? (
-                  <MonitorOff color="#ef4444" size={22} />
-                ) : (
-                  <MonitorUp
-                    color="#94a3b8"
-                    size={22}
-                  />
+              <View style={[styles.controlIconBox, isMicMuted && styles.controlIconBoxMuted]}>
+                {isMicMuted ? <MicOff color="#ef4444" size={22} /> : <Mic color="#10b981" size={22} />}
+              </View>
+              <Text style={styles.controlLabel}>{isMicMuted ? t('meeting.unmute') : t('meeting.mute')}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.controlItem}
+              onPress={() => {
+                resetControlsTimer();
+                handleToggleCamera();
+              }}
+            >
+              <View style={[styles.controlIconBox, isCameraOff && styles.controlIconBoxMuted]}>
+                {isCameraOff ? <VideoOff color="#ef4444" size={22} /> : <LucideVideo color="#10b981" size={22} />}
+              </View>
+              <Text style={styles.controlLabel}>{isCameraOff ? t('meeting.startVideo') : t('meeting.stopVideo')}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.controlItem}
+              onPress={() => {
+                resetControlsTimer();
+                setIsChatOpen(true);
+                setUnreadChatCount(0);
+              }}
+            >
+              <View style={styles.controlIconBox}>
+                <MessageSquare color="#00A8FF" size={22} />
+                {unreadChatCount > 0 && (
+                  <View style={styles.chatBadge}>
+                    <Text style={styles.chatBadgeText}>
+                      {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                    </Text>
+                  </View>
                 )}
               </View>
-              <Text
-                style={[
-                  styles.controlLabel,
-                  isScreenSharing && { color: '#ef4444', fontFamily: 'PlusJakartaSans-Bold' },
-                ]}
-              >
-                {isScreenSharing ? t('meeting.stopShare') : t('meeting.share')}
-              </Text>
+              <Text style={styles.controlLabel}>{t('meeting.chat')}</Text>
             </TouchableOpacity>
-          )}
 
-          <TouchableOpacity
-            style={styles.controlItem}
-            onPress={() => {
-              resetControlsTimer();
-              setIsParticipantsOpen(true);
-            }}
-          >
-            <View style={styles.controlIconBox}>
-              <Users color="#00A8FF" size={22} />
-              <View style={[styles.badge, { backgroundColor: isHost && waitingGuests.length > 0 ? '#f59e0b' : '#00A8FF' }]}>
-                <Text style={styles.badgeText}>
-                  {isHost && waitingGuests.length > 0 ? `+${waitingGuests.length}` : activeMeetingParticipants.length}
+            {(allParticipants.length > 1 || isScreenSharing) && (
+              <TouchableOpacity
+                style={styles.controlItem}
+                onPress={() => {
+                  resetControlsTimer();
+                  handleToggleScreenShare();
+                }}
+                activeOpacity={0.8}
+              >
+                <View
+                  style={[
+                    styles.controlIconBox,
+                    isScreenSharing && {
+                      backgroundColor: 'rgba(239, 68, 68, 0.2)',
+                      borderColor: '#ef4444',
+                    },
+                  ]}
+                >
+                  {isScreenSharing ? (
+                    <MonitorOff color="#ef4444" size={22} />
+                  ) : (
+                    <MonitorUp
+                      color="#94a3b8"
+                      size={22}
+                    />
+                  )}
+                </View>
+                <Text
+                  style={[
+                    styles.controlLabel,
+                    isScreenSharing && { color: '#ef4444', fontFamily: 'PlusJakartaSans-Bold' },
+                  ]}
+                >
+                  {isScreenSharing ? t('meeting.stopShare') : t('meeting.share')}
                 </Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity
+              style={styles.controlItem}
+              onPress={() => {
+                resetControlsTimer();
+                setIsParticipantsOpen(true);
+              }}
+            >
+              <View style={styles.controlIconBox}>
+                <Users color="#00A8FF" size={22} />
+                <View style={[styles.badge, { backgroundColor: isHost && waitingGuests.length > 0 ? '#f59e0b' : '#00A8FF' }]}>
+                  <Text style={styles.badgeText}>
+                    {isHost && waitingGuests.length > 0 ? `+${waitingGuests.length}` : activeMeetingParticipants.length}
+                  </Text>
+                </View>
               </View>
-            </View>
-            <Text style={styles.controlLabel}>{t('meeting.members')}</Text>
-          </TouchableOpacity>
-        </View>
-      </Animated.View>
+              <Text style={styles.controlLabel}>{t('meeting.members')}</Text>
+            </TouchableOpacity>
+          </View>
+        </Animated.View>
+      )}
 
       {/* --- MEETING INFO MODAL --- */}
       <Modal
-        visible={isInfoModalOpen}
+        visible={!isNativePip && isInfoModalOpen}
         transparent
         animationType="slide"
         onRequestClose={() => setIsInfoModalOpen(false)}
@@ -3114,7 +3166,7 @@ export const MeetingRoomContent: React.FC<{
 
       {/* --- LEAVE CONFIRMATION MODAL --- */}
       <Modal
-        visible={isLeaveModalOpen}
+        visible={!isNativePip && isLeaveModalOpen}
         transparent
         animationType="slide"
         onRequestClose={() => setIsLeaveModalOpen(false)}
@@ -3148,7 +3200,7 @@ export const MeetingRoomContent: React.FC<{
       </Modal>
       {/* --- INVITE OTHERS MODAL --- */}
       <Modal
-        visible={isInviteModalOpen}
+        visible={!isNativePip && isInviteModalOpen}
         transparent
         animationType="slide"
         onRequestClose={() => setIsInviteModalOpen(false)}
@@ -3295,7 +3347,7 @@ export const MeetingRoomContent: React.FC<{
 
       {/* --- AUDIO OUTPUT DEVICE MODAL --- */}
       <Modal
-        visible={isAudioModalOpen}
+        visible={!isNativePip && isAudioModalOpen}
         animationType="slide"
         transparent={true}
         onRequestClose={() => setIsAudioModalOpen(false)}
@@ -3395,7 +3447,7 @@ export const MeetingRoomContent: React.FC<{
 
       {/* --- IN-APP FULLSCREEN MEDIA PREVIEW MODAL --- */}
       <MediaPreviewModal
-        visible={Boolean(previewMedia)}
+        visible={!isNativePip && Boolean(previewMedia)}
         media={previewMedia}
         onClose={() => setPreviewMedia(null)}
       />

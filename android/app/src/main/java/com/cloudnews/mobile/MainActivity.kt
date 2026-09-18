@@ -1,5 +1,6 @@
 package com.cloudnews.mobile
 
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -46,11 +47,39 @@ class MainActivity : ReactActivity() {
   }
 
   /**
+   * Called when the user presses Home button or leaves the app.
+   * If user is in a meeting and screen share is NOT active, automatically enter Picture-in-Picture.
+   * If screen share IS active, do NOT enter PiP so user can present other apps.
+   */
+  override fun onUserLeaveHint() {
+      super.onUserLeaveHint()
+      if (PictureInPictureModule.canEnterPip()) {
+          PictureInPictureModule.enterPipMode(this)
+      }
+  }
+
+  /**
+   * Notify JS/React Native when Picture-in-Picture mode is entered or exited.
+   */
+  override fun onPictureInPictureModeChanged(
+      isInPictureInPictureMode: Boolean,
+      newConfig: Configuration
+  ) {
+      super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+      PictureInPictureModule.notifyPipModeChanged(isInPictureInPictureMode)
+  }
+
+  /**
     * Align the back button behavior with Android S
     * where moving root activities to background instead of finishing activities.
-    * @see <a href="https://developer.android.com/reference/android/app/Activity#onBackPressed()">onBackPressed</a>
+    * If meeting is active without screen share, enter PiP instead of closing.
     */
   override fun invokeDefaultOnBackPressed() {
+      if (PictureInPictureModule.canEnterPip()) {
+          val entered = PictureInPictureModule.enterPipMode(this)
+          if (entered) return
+      }
+
       if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
           if (!moveTaskToBack(false)) {
               // For non-root activities, use the default implementation to finish them.

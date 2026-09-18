@@ -11,7 +11,8 @@ class ScreenShareWakeLockPackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
         return listOf(
             ScreenShareWakeLockModule(reactContext),
-            MeetingForegroundModule(reactContext)
+            MeetingForegroundModule(reactContext),
+            PictureInPictureModule(reactContext)
         )
     }
 
