@@ -1080,6 +1080,8 @@ export const MeetingRoomContent: React.FC<{
   const [isMicMuted, setIsMicMuted] = useState(Boolean(muteAudioParam || !hasAudioPermission));
   const [isCameraOff, setIsCameraOff] = useState(Boolean(muteVideoParam || !hasCameraPermission));
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isScreenShareToggling, setIsScreenShareToggling] = useState(false);
+  const isScreenShareTogglingRef = useRef(false);
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
 
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -2494,6 +2496,10 @@ export const MeetingRoomContent: React.FC<{
 
   const handleToggleScreenShare = async () => {
     if (!localParticipant) return;
+    if (isScreenShareTogglingRef.current) {
+      console.log('[ScreenShare] Toggle already in progress, ignoring duplicate call');
+      return;
+    }
 
     // Screen sharing is unavailable when alone in the meeting
     if (allParticipants.length <= 1 && !isScreenSharing) {
@@ -2503,6 +2509,9 @@ export const MeetingRoomContent: React.FC<{
       );
       return;
     }
+
+    isScreenShareTogglingRef.current = true;
+    setIsScreenShareToggling(true);
 
     const nextSharing = !isScreenSharing;
     try {
@@ -2529,8 +2538,12 @@ export const MeetingRoomContent: React.FC<{
             degradationPreference: 'balanced',
           } as any
         );
+
         setIsScreenSharing(true);
         setPipConfig(true, true);
+
+        // Small delay to allow MediaProjection track to stabilize before touching mic to prevent WebRTC track conflict
+        await new Promise(resolve => setTimeout(resolve, 350));
 
         // Guarantee that local microphone track is NOT disposed or unpublished, and coexists with screen share
         if (micShouldBeActive && !localParticipant.isMicrophoneEnabled) {
@@ -2551,7 +2564,9 @@ export const MeetingRoomContent: React.FC<{
           releaseScreenShareWakeLock();
         }
 
-        // Re-verify microphone track state after stopping screen share
+        // Small delay before verifying microphone track state after stopping screen share
+        await new Promise(resolve => setTimeout(resolve, 200));
+
         if (!isMicMuted && !localParticipant.isMicrophoneEnabled) {
           try {
             await localParticipant.setMicrophoneEnabled(true);
@@ -2564,8 +2579,11 @@ export const MeetingRoomContent: React.FC<{
       console.error('[ScreenShare] Error:', e);
       prepareScreenShare(false);
       setPipConfig(true, false);
+      setIsScreenSharing(false);
+      releaseScreenShareWakeLock();
+
       const msg = (e?.message || e?.name || String(e) || '').toLowerCase();
-      // Gracefully handle user cancelling the OS media projection prompt
+      // Gracefully handle user cancelling the OS media projection prompt without loop
       if (
         msg.includes('cancel') ||
         msg.includes('reject') ||
@@ -2573,22 +2591,24 @@ export const MeetingRoomContent: React.FC<{
         msg.includes('notallowed') ||
         msg.includes('result_canceled')
       ) {
-        setIsScreenSharing(false);
-        releaseScreenShareWakeLock();
         return;
       }
       Alert.alert(
         'Screen Share Notice',
         'Could not share screen. Please allow screen recording/casting when prompted by Android.'
       );
-      setIsScreenSharing(false);
-      releaseScreenShareWakeLock();
+    } finally {
+      // Release toggle lock with buffer to debounce double-taps
+      setTimeout(() => {
+        isScreenShareTogglingRef.current = false;
+        setIsScreenShareToggling(false);
+      }, 400);
     }
   };
 
   // Automatically stop screen sharing if all other participants leave the meeting
   useEffect(() => {
-    if (isScreenSharing && allParticipants.length <= 1 && localParticipant) {
+    if (isScreenSharing && !isScreenShareTogglingRef.current && allParticipants.length <= 1 && localParticipant) {
       prepareScreenShare(false);
       setPipConfig(true, false);
       localParticipant.setScreenShareEnabled(false).catch(err => {
@@ -3087,11 +3107,19 @@ export const MeetingRoomContent: React.FC<{
             <Text style={styles.floatingBannerText}>{t('meeting.screenShareBanner')}</Text>
           </View>
           <TouchableOpacity
-            style={styles.floatingStopBtn}
-            onPress={handleToggleScreenShare}
+            style={[styles.floatingStopBtn, isScreenShareToggling && { opacity: 0.6 }]}
+            onPress={() => {
+              if (isScreenShareTogglingRef.current) return;
+              handleToggleScreenShare();
+            }}
+            disabled={isScreenShareToggling}
             activeOpacity={0.8}
           >
-            <MonitorOff color="#FFF" size={13} style={{ marginRight: 5 }} />
+            {isScreenShareToggling ? (
+              <ActivityIndicator size="small" color="#FFF" style={{ marginRight: 5 }} />
+            ) : (
+              <MonitorOff color="#FFF" size={13} style={{ marginRight: 5 }} />
+            )}
             <Text style={styles.floatingStopBtnText}>{t('meeting.stopSharing')}</Text>
           </TouchableOpacity>
         </View>
@@ -3121,7 +3149,10 @@ export const MeetingRoomContent: React.FC<{
             }}
             renderAudioIcon={renderCurrentAudioIcon}
             onPress={handleScreenTap}
-            onStopScreenShare={handleToggleScreenShare}
+            onStopScreenShare={() => {
+              if (isScreenShareTogglingRef.current) return;
+              handleToggleScreenShare();
+            }}
             isSelf={Boolean(
               isScreenSharing ||
               activeScreenShare.participant?.isLocal ||
@@ -3672,11 +3703,13 @@ export const MeetingRoomContent: React.FC<{
 
             {(allParticipants.length > 1 || isScreenSharing) && (
               <TouchableOpacity
-                style={styles.controlItem}
+                style={[styles.controlItem, isScreenShareToggling && { opacity: 0.6 }]}
                 onPress={() => {
+                  if (isScreenShareTogglingRef.current) return;
                   resetControlsTimer();
                   handleToggleScreenShare();
                 }}
+                disabled={isScreenShareToggling}
                 activeOpacity={0.8}
               >
                 <View
@@ -3688,7 +3721,9 @@ export const MeetingRoomContent: React.FC<{
                     },
                   ]}
                 >
-                  {isScreenSharing ? (
+                  {isScreenShareToggling ? (
+                    <ActivityIndicator size="small" color={isScreenSharing ? '#ef4444' : '#00A8FF'} />
+                  ) : isScreenSharing ? (
                     <MonitorOff color="#ef4444" size={22} />
                   ) : (
                     <MonitorUp
