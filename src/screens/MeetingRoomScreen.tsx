@@ -84,6 +84,8 @@ import {
   Image,
   Linking,
   KeyboardAvoidingView,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -93,6 +95,7 @@ import { useTranslation } from '../hooks/useTranslation';
 import storage, { StorageKeys } from '../services/storage';
 import { useMeeting } from '../context/MeetingContext';
 import { acquireScreenShareWakeLock, releaseScreenShareWakeLock } from '../utils/wakeLock';
+import { startAudioSession, stopAudioSession } from '../services/livekit';
 import { MediaPreviewModal, MediaPreviewItem, sanitizeMediaUrl } from '../components/meeting/MediaPreviewModal';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -982,7 +985,7 @@ export const MeetingRoomContent: React.FC<{
     let isMounted = true;
     const initAudio = async () => {
       try {
-        await AudioSession.startAudioSession();
+        await startAudioSession();
         if (isMounted) {
           await fetchAudioOutputs(true);
         }
@@ -994,7 +997,7 @@ export const MeetingRoomContent: React.FC<{
 
     return () => {
       isMounted = false;
-      AudioSession.stopAudioSession().catch(e => console.warn('[Audio] Stop audio error:', e));
+      stopAudioSession();
     };
   }, [fetchAudioOutputs]);
 
@@ -1154,6 +1157,33 @@ export const MeetingRoomContent: React.FC<{
       localParticipant.setCameraEnabled(false).catch(e => console.warn('[LiveKit] Set camera off error:', e));
     }
   }, [localParticipant, muteAudioParam, muteVideoParam, hasAudioPermission, hasCameraPermission]);
+
+  // Keep microphone and audio session active when app transitions to background (e.g. minimized to Home screen)
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      console.log('[AppState] Meeting Room state changed to:', nextAppState);
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        // App is minimized to Android Home Screen or another app is focused.
+        // Guarantee audio session & microphone capture remain active in background without being silenced.
+        if (localParticipant && !isMicMuted) {
+          console.log('[AppState] Ensuring microphone track is preserved in background');
+          localParticipant.setMicrophoneEnabled(true).catch(err => {
+            console.warn('[AppState] Background microphone preserve warning:', err);
+          });
+        }
+      } else if (nextAppState === 'active') {
+        // Returned to foreground, re-verify audio output and mic state
+        if (localParticipant && !isMicMuted) {
+          localParticipant.setMicrophoneEnabled(true).catch(() => {});
+        }
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => {
+      subscription.remove();
+    };
+  }, [localParticipant, isMicMuted]);
 
   const allParticipants = useMemo(() => {
     const map = new Map<string, Participant>();
@@ -1827,6 +1857,9 @@ export const MeetingRoomContent: React.FC<{
     const nextSharing = !isScreenSharing;
     try {
       if (nextSharing) {
+        // Record current microphone state before screen share starts
+        const micShouldBeActive = !isMicMuted;
+
         await localParticipant.setScreenShareEnabled(
           true,
           {
@@ -1845,9 +1878,28 @@ export const MeetingRoomContent: React.FC<{
           } as any
         );
         setIsScreenSharing(true);
+
+        // Guarantee that local microphone track is NOT disposed or unpublished, and coexists with screen share
+        if (micShouldBeActive) {
+          console.log('[ScreenShare] Preserving active microphone track coexisting with screen share');
+          try {
+            await localParticipant.setMicrophoneEnabled(true);
+          } catch (micErr) {
+            console.warn('[ScreenShare] Re-enabling microphone failed:', micErr);
+          }
+        }
       } else {
         await localParticipant.setScreenShareEnabled(false);
         setIsScreenSharing(false);
+
+        // Re-verify microphone track state after stopping screen share
+        if (!isMicMuted) {
+          try {
+            await localParticipant.setMicrophoneEnabled(true);
+          } catch (micErr) {
+            console.warn('[ScreenShare] Re-enabling microphone after stop failed:', micErr);
+          }
+        }
       }
     } catch (e: any) {
       console.error('[ScreenShare] Error:', e);
@@ -1878,12 +1930,15 @@ export const MeetingRoomContent: React.FC<{
         console.warn('[ScreenShare] Auto-stop failed:', err);
       });
       setIsScreenSharing(false);
+      if (!isMicMuted) {
+        localParticipant.setMicrophoneEnabled(true).catch(() => {});
+      }
       Alert.alert(
         t('meeting.screenShareStoppedTitle'),
         t('meeting.screenShareStoppedDesc')
       );
     }
-  }, [allParticipants.length, isScreenSharing, localParticipant, t]);
+  }, [allParticipants.length, isScreenSharing, localParticipant, isMicMuted, t]);
 
   // Keep phone screen awake while screen sharing is active
   useEffect(() => {
