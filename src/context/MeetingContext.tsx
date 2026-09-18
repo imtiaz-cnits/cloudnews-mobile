@@ -1,7 +1,11 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import storage, { StorageKeys } from '../services/storage';
 import { resetToOnboarding, resetToHome } from '../navigation/navigationRef';
-import { startMeetingForegroundService, stopMeetingForegroundService } from '../utils/wakeLock';
+import {
+  startMeetingForegroundService,
+  stopMeetingForegroundService,
+  releaseScreenShareWakeLock,
+} from '../utils/wakeLock';
 
 export interface MeetingSession {
   roomName: string;
@@ -55,6 +59,7 @@ export const MeetingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
   const endMeeting = useCallback(async () => {
+    releaseScreenShareWakeLock();
     stopMeetingForegroundService();
     const isGuestSession = Boolean(
       activeMeeting?.isGuest || (await storage.getItem(StorageKeys.IS_GUEST)) === 'true'

@@ -1158,6 +1158,7 @@ export const MeetingRoomContent: React.FC<{
     return () => {
       isMounted = false;
       stopAudioSession();
+      releaseScreenShareWakeLock();
       stopMeetingForegroundService();
     };
   }, [fetchAudioOutputs, meetingTitle, roomName]);
@@ -2137,8 +2138,12 @@ export const MeetingRoomContent: React.FC<{
           }
         }
       } else {
-        await localParticipant.setScreenShareEnabled(false);
-        setIsScreenSharing(false);
+        try {
+          await localParticipant.setScreenShareEnabled(false);
+        } finally {
+          setIsScreenSharing(false);
+          releaseScreenShareWakeLock();
+        }
 
         // Re-verify microphone track state after stopping screen share
         if (!isMicMuted && !localParticipant.isMicrophoneEnabled) {
@@ -2161,6 +2166,7 @@ export const MeetingRoomContent: React.FC<{
         msg.includes('result_canceled')
       ) {
         setIsScreenSharing(false);
+        releaseScreenShareWakeLock();
         return;
       }
       Alert.alert(
@@ -2168,6 +2174,7 @@ export const MeetingRoomContent: React.FC<{
         'Could not share screen. Please allow screen recording/casting when prompted by Android.'
       );
       setIsScreenSharing(false);
+      releaseScreenShareWakeLock();
     }
   };
 
@@ -2176,8 +2183,11 @@ export const MeetingRoomContent: React.FC<{
     if (isScreenSharing && allParticipants.length <= 1 && localParticipant) {
       localParticipant.setScreenShareEnabled(false).catch(err => {
         console.warn('[ScreenShare] Auto-stop failed:', err);
+      }).finally(() => {
+        releaseScreenShareWakeLock();
       });
       setIsScreenSharing(false);
+      releaseScreenShareWakeLock();
       if (!isMicMuted) {
         localParticipant.setMicrophoneEnabled(true).catch(() => {});
       }

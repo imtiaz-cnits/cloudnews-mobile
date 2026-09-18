@@ -8,7 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -47,7 +49,85 @@ class MeetingForegroundService : Service() {
                 action = ACTION_STOP
             }
             try {
+                context.startService(intent)
+            } catch (e: Exception) {
+                // startService might fail if app already in background, harmless
+            }
+            try {
                 context.stopService(intent)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
+            // Explicitly remove meeting notification ID
+            try {
+                val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                notificationManager?.cancel(NOTIFICATION_ID)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
+            // Explicitly stop WebRTC MediaProjectionService and dismiss screen sharing notifications
+            stopMediaProjectionService(context)
+        }
+
+        /**
+         * Explicitly stops WebRTC's MediaProjectionService and dismisses
+         * any lingering "Screen sharing / You are currently sharing your screen" notifications.
+         */
+        fun stopMediaProjectionService(context: Context) {
+            // 1. Abort via WebRTC's MediaProjectionService.abort() helper
+            try {
+                com.oney.WebRTCModule.MediaProjectionService.abort(context)
+            } catch (t: Throwable) {
+                // WebRTC class may be missing or abort failed
+            }
+
+            // 2. Send stopService intent to com.oney.WebRTCModule.MediaProjectionService
+            try {
+                val intent = Intent(context, com.oney.WebRTCModule.MediaProjectionService::class.java)
+                context.stopService(intent)
+            } catch (t: Throwable) {
+                // Ignore
+            }
+
+            // 3. Immediately dismiss any active notification belonging to OngoingConferenceChannel or matching screen share text
+            dismissMediaProjectionNotifications(context)
+
+            // 4. Also perform a delayed dismiss (250ms) to ensure asynchronous OS teardown notifications are cleaned up
+            try {
+                Handler(Looper.getMainLooper()).postDelayed({
+                    dismissMediaProjectionNotifications(context)
+                }, 250L)
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+
+        fun dismissMediaProjectionNotifications(context: Context) {
+            try {
+                val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                    ?: return
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    val activeNotifications = notificationManager.activeNotifications
+                    activeNotifications?.forEach { sbn ->
+                        val channelId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) sbn.notification.channelId else null
+                        val title = sbn.notification.extras?.getCharSequence(NotificationCompat.EXTRA_TITLE)?.toString() ?: ""
+                        val text = sbn.notification.extras?.getCharSequence(NotificationCompat.EXTRA_TEXT)?.toString() ?: ""
+
+                        val isMediaProjectionChannel = channelId == "OngoingConferenceChannel"
+                        val isScreenShareText = title.contains("Screen sharing", ignoreCase = true) ||
+                                title.contains("正在共享屏幕", ignoreCase = true) ||
+                                title.contains("Screen share", ignoreCase = true) ||
+                                text.contains("sharing your screen", ignoreCase = true) ||
+                                text.contains("正在共享屏幕", ignoreCase = true)
+
+                        if (isMediaProjectionChannel || isScreenShareText) {
+                            notificationManager.cancel(sbn.tag, sbn.id)
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -58,14 +138,7 @@ class MeetingForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            releaseWakeLock()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
-            stopSelf()
+            cleanupAndStop()
             return START_NOT_STICKY
         }
 
@@ -116,7 +189,8 @@ class MeetingForegroundService : Service() {
 
         acquireWakeLock()
 
-        return START_STICKY
+        // START_NOT_STICKY ensures the OS does not auto-recreate the service when swiped away or closed
+        return START_NOT_STICKY
     }
 
     private fun acquireWakeLock() {
@@ -162,8 +236,35 @@ class MeetingForegroundService : Service() {
         }
     }
 
-    override fun onDestroy() {
+    private fun cleanupAndStop() {
         releaseWakeLock()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            notificationManager?.cancel(NOTIFICATION_ID)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        stopMediaProjectionService(this)
+        stopSelf()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        cleanupAndStop()
+    }
+
+    override fun onDestroy() {
+        cleanupAndStop()
         super.onDestroy()
     }
 }

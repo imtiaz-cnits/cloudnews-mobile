@@ -47,6 +47,18 @@ class ScreenShareWakeLockModule(reactContext: ReactApplicationContext) : ReactCo
         } catch (e: Exception) {
             e.printStackTrace()
         }
+
+        // Explicitly terminate MediaProjectionService and dismiss screen sharing notifications
+        try {
+            MeetingForegroundService.stopMediaProjectionService(reactApplicationContext)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    @ReactMethod
+    fun stopScreenShare() {
+        releaseWakeLock()
     }
 
     @ReactMethod

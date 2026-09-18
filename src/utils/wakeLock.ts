@@ -39,10 +39,14 @@ export async function releaseScreenShareWakeLock(): Promise<void> {
     console.warn('[WakeLock] Expo deactivateKeepAwake failed:', err);
   }
 
-  // 2. Native Android PowerManager WakeLock release
+  // 2. Native Android PowerManager WakeLock release & MediaProjection notification cleanup
   if (Platform.OS === 'android' && NativeModules.ScreenShareWakeLock) {
     try {
-      NativeModules.ScreenShareWakeLock.releaseWakeLock();
+      if (typeof NativeModules.ScreenShareWakeLock.stopScreenShare === 'function') {
+        NativeModules.ScreenShareWakeLock.stopScreenShare();
+      } else {
+        NativeModules.ScreenShareWakeLock.releaseWakeLock();
+      }
     } catch (err) {
       console.warn('[WakeLock] Native releaseWakeLock failed:', err);
     }

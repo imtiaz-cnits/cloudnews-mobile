@@ -92,4 +92,13 @@ class MainActivity : ReactActivity() {
       // because it's doing more than [Activity.moveTaskToBack] in fact.
       super.invokeDefaultOnBackPressed()
   }
+
+  override fun onDestroy() {
+      try {
+          MeetingForegroundService.stopService(this)
+      } catch (e: Exception) {
+          e.printStackTrace()
+      }
+      super.onDestroy()
+  }
 }
