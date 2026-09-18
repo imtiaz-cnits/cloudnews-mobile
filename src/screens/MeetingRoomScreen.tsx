@@ -90,7 +90,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import { RootStackNavigationProp, RootStackRouteProp } from '../navigation/types';
-import { getMeetingInviteLink, getUsers, uploadMeetingFile, User } from '../services/api';
+import { getMeetingInviteLink, getUsers, uploadMeetingFile, User, endMeeting, leaveMeeting } from '../services/api';
 import { useTranslation } from '../hooks/useTranslation';
 import storage, { StorageKeys } from '../services/storage';
 import { useMeeting } from '../context/MeetingContext';
@@ -1602,7 +1602,120 @@ export const MeetingRoomContent: React.FC<{
     setLatestWaitingGuest(prev => (prev?.identity === guestIdentity ? null : prev));
   }, [localParticipant]);
 
-  const handleLeaveWaitingRoom = useCallback(() => {
+  const hostIdentityRef = useRef<string | null>(null);
+  const isEndingNoticeShownRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (isHost && localParticipant) {
+      hostIdentityRef.current = localParticipant.identity;
+      return;
+    }
+    if (hostPresenceData.hostIdentity) {
+      hostIdentityRef.current = hostPresenceData.hostIdentity;
+      return;
+    }
+    const remoteHost = allParticipants.find(
+      p => p.identity !== localParticipant?.identity && checkIsParticipantHost(p)
+    );
+    if (remoteHost) {
+      hostIdentityRef.current = remoteHost.identity;
+    }
+  }, [isHost, localParticipant, hostPresenceData, allParticipants]);
+
+  const handleMeetingEndedNotice = useCallback((customMsg?: string) => {
+    if (isHost || isEndingNoticeShownRef.current) return;
+    isEndingNoticeShownRef.current = true;
+
+    const title = t('meeting.hostLeftMeetingEndedTitle') || 'Meeting Ended';
+    const message =
+      customMsg ||
+      t('meeting.hostLeftMeetingEnded') ||
+      'The host has left the meeting. The meeting has ended.';
+
+    // Safe auto-exit fallback after 4.5 seconds if alert is unhandled
+    const autoExitTimer = setTimeout(() => {
+      try {
+        room?.disconnect();
+      } catch {}
+      onLeave();
+    }, 4500);
+
+    Alert.alert(
+      title,
+      message,
+      [
+        {
+          text: t('common.ok') || 'OK',
+          onPress: () => {
+            clearTimeout(autoExitTimer);
+            try {
+              room?.disconnect();
+            } catch {}
+            onLeave();
+          },
+        },
+      ],
+      { cancelable: false }
+    );
+  }, [isHost, room, onLeave, t]);
+
+  const handleLeaveOrEndMeeting = useCallback(async () => {
+    setIsLeaveModalOpen(false);
+
+    if (isHost) {
+      // 1. Broadcast MEETING_ENDED_BY_HOST to all connected participants immediately
+      try {
+        if (localParticipant && room?.state === ConnectionState.Connected) {
+          const encoder = new TextEncoder();
+          const payload = encoder.encode(
+            JSON.stringify({
+              type: 'MEETING_ENDED_BY_HOST',
+              message: t('meeting.hostLeftMeetingEnded'),
+              hostIdentity: localParticipant.identity,
+              timestamp: Date.now(),
+            })
+          );
+          await localParticipant.publishData(payload, { reliable: true } as any);
+        }
+      } catch (e) {
+        console.warn('[MeetingRoomScreen] Error publishing MEETING_ENDED_BY_HOST:', e);
+      }
+
+      // 2. Call backend API to end meeting and delete LiveKit SFU room
+      try {
+        if (meetingCode) {
+          await endMeeting(meetingCode);
+        }
+      } catch (e) {
+        console.warn('[MeetingRoomScreen] Error ending meeting on server:', e);
+      }
+    } else {
+      // Participant leaves
+      try {
+        if (meetingCode) {
+          await leaveMeeting(meetingCode);
+        }
+      } catch (e) {
+        console.warn('[MeetingRoomScreen] Error notifying leave meeting on server:', e);
+      }
+    }
+
+    // 3. Disconnect local LiveKit room & trigger onLeave
+    try {
+      await room?.disconnect();
+    } catch (e) {
+      console.warn('[MeetingRoomScreen] Error disconnecting room:', e);
+    }
+
+    onLeave();
+  }, [isHost, localParticipant, room, meetingCode, onLeave, t]);
+
+  const handleLeaveWaitingRoom = useCallback(async () => {
+    if (isHost) {
+      await handleLeaveOrEndMeeting();
+      return;
+    }
+
     if (localParticipant) {
       const encoder = new TextEncoder();
       const payload = encoder.encode(
@@ -1614,8 +1727,19 @@ export const MeetingRoomContent: React.FC<{
       );
       localParticipant.publishData(payload, { reliable: true } as any).catch(() => {});
     }
+
+    try {
+      if (meetingCode) {
+        await leaveMeeting(meetingCode);
+      }
+    } catch {}
+
+    try {
+      await room?.disconnect();
+    } catch {}
+
     onLeave();
-  }, [localParticipant, onLeave]);
+  }, [isHost, handleLeaveOrEndMeeting, localParticipant, meetingCode, room, onLeave]);
 
   // Broadcast host presence when host connects
   useEffect(() => {
@@ -1746,6 +1870,11 @@ export const MeetingRoomContent: React.FC<{
 
       try {
         const parsed = JSON.parse(text);
+        if (parsed.type === 'MEETING_ENDED_BY_HOST') {
+          handleMeetingEndedNotice(parsed.message);
+          return;
+        }
+
         if (parsed.type === 'HOST_PRESENT') {
           setHostPresenceData({ isPresent: true, hostIdentity: parsed.hostIdentity });
           return;
@@ -1872,7 +2001,39 @@ export const MeetingRoomContent: React.FC<{
     return () => {
       room.off(RoomEvent.DataReceived, onDataReceived);
     };
-  }, [room, localParticipant]);
+  }, [room, localParticipant, handleMeetingEndedNotice]);
+
+  // Listen for host disconnection or room termination to notify guests and auto-end
+  useEffect(() => {
+    if (!room) return;
+
+    const handleParticipantDisconnected = (participant: Participant) => {
+      console.log('[MeetingRoomScreen] Participant disconnected:', participant.identity);
+      const isHostDisconnected =
+        checkIsParticipantHost(participant) ||
+        (hostIdentityRef.current && participant.identity === hostIdentityRef.current);
+
+      if (isHostDisconnected && !isHost) {
+        console.log('[MeetingRoomScreen] Host disconnected! Auto-ending meeting for guest.');
+        handleMeetingEndedNotice();
+      }
+    };
+
+    const handleRoomDisconnected = (reason?: any) => {
+      console.log('[MeetingRoomScreen] Room disconnected with reason:', reason);
+      if (!isHost) {
+        handleMeetingEndedNotice();
+      }
+    };
+
+    room.on(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected);
+    room.on(RoomEvent.Disconnected, handleRoomDisconnected);
+
+    return () => {
+      room.off(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected);
+      room.off(RoomEvent.Disconnected, handleRoomDisconnected);
+    };
+  }, [room, isHost, handleMeetingEndedNotice]);
 
   const sendChatMessage = useCallback(async () => {
     const textToSend = chatInput.trim();
@@ -2430,18 +2591,24 @@ export const MeetingRoomContent: React.FC<{
           <View style={styles.modalOverlay}>
             <View style={[styles.modalContent, { paddingBottom: insets.bottom + 20 }]}>
               <View style={styles.modalDragHandle} />
-              <Text style={styles.leaveModalTitle}>{t('meeting.leaveConfirm')}</Text>
-              <Text style={styles.leaveModalSub}>{t('meeting.stay')}</Text>
+              <Text style={styles.leaveModalTitle}>
+                {isHost ? t('meeting.endConfirm') : t('meeting.leaveConfirm')}
+              </Text>
+              <Text style={styles.leaveModalSub}>
+                {isHost ? t('meeting.endConfirmHost') : t('meeting.stay')}
+              </Text>
 
               <View style={styles.leaveModalActions}>
                 <TouchableOpacity
-                  style={styles.confirmLeaveBtn}
+                  style={[styles.confirmLeaveBtn, isHost && { backgroundColor: '#ef4444' }]}
                   onPress={() => {
                     setIsLeaveModalOpen(false);
                     handleLeaveWaitingRoom();
                   }}
                 >
-                  <Text style={styles.confirmLeaveText}>{t('meeting.leave')}</Text>
+                  <Text style={styles.confirmLeaveText}>
+                    {isHost ? t('meeting.endCallHost') : t('meeting.leave')}
+                  </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -3388,18 +3555,21 @@ export const MeetingRoomContent: React.FC<{
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { paddingBottom: insets.bottom + 20 }]}>
             <View style={styles.modalDragHandle} />
-            <Text style={styles.leaveModalTitle}>{t('meeting.leaveConfirm')}</Text>
-            <Text style={styles.leaveModalSub}>{t('meeting.stay')}</Text>
+            <Text style={styles.leaveModalTitle}>
+              {isHost ? t('meeting.endConfirm') : t('meeting.leaveConfirm')}
+            </Text>
+            <Text style={styles.leaveModalSub}>
+              {isHost ? t('meeting.endConfirmHost') : t('meeting.stay')}
+            </Text>
 
             <View style={styles.leaveModalActions}>
               <TouchableOpacity
-                style={styles.confirmLeaveBtn}
-                onPress={() => {
-                  setIsLeaveModalOpen(false);
-                  onLeave();
-                }}
+                style={[styles.confirmLeaveBtn, isHost && { backgroundColor: '#ef4444' }]}
+                onPress={handleLeaveOrEndMeeting}
               >
-                <Text style={styles.confirmLeaveText}>{t('meeting.leave')}</Text>
+                <Text style={styles.confirmLeaveText}>
+                  {isHost ? t('meeting.endCallHost') : t('meeting.leave')}
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity

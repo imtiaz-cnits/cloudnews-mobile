@@ -12,6 +12,7 @@ import { useMeeting } from '../../context/MeetingContext';
 import { initLiveKit, startAudioSession, stopAudioSession } from '../../services/livekit';
 import { MeetingRoomContent } from '../../screens/MeetingRoomScreen';
 import { FloatingPiPView } from './FloatingPiPView';
+import { endMeeting as endMeetingApi, leaveMeeting as leaveMeetingApi } from '../../services/api';
 import storage, { StorageKeys, MeetingSettings, DEFAULT_MEETING_SETTINGS } from '../../services/storage';
 
 // Ensure LiveKit WebRTC globals are ready
@@ -239,23 +240,34 @@ export const GlobalMeetingOverlay: React.FC = () => {
   const shouldEnableAudio = hasAudioPermission && !activeMeeting.muteAudio;
   const shouldEnableVideo = hasCameraPermission && !activeMeeting.muteVideo;
 
+  const handleFloatingLeave = useCallback(async () => {
+    if (activeMeeting?.isHost && activeMeeting.meetingCode) {
+      try {
+        await endMeetingApi(activeMeeting.meetingCode);
+      } catch {}
+    } else if (activeMeeting?.meetingCode) {
+      try {
+        await leaveMeetingApi(activeMeeting.meetingCode);
+      } catch {}
+    }
+    endMeeting();
+  }, [activeMeeting, endMeeting]);
+
   return (
-    <View
-      style={StyleSheet.absoluteFillObject}
-      pointerEvents={isMinimized ? 'box-none' : 'auto'}
-    >
+    <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
+      {/* Primary Video Conference Room */}
       <LiveKitRoom
-        room={room}
         serverUrl={activeMeeting.serverUrl}
         token={activeMeeting.token}
         connect={true}
-        audio={shouldEnableAudio}
-        video={shouldEnableVideo}
+        video={!activeMeeting.muteVideo && hasCameraPermission}
+        audio={!activeMeeting.muteAudio && hasAudioPermission}
+        connectOptions={connectOptions}
+        room={room}
         onDisconnected={handleDisconnected}
         onError={handleError}
-        connectOptions={connectOptions}
       >
-        {/* Full-Screen Meeting Content (persists mounted to keep connection & state active) */}
+        {/* Active In-App View */}
         <View
           style={[
             StyleSheet.absoluteFillObject,
@@ -289,7 +301,7 @@ export const GlobalMeetingOverlay: React.FC = () => {
             roomName={activeMeeting.roomName}
             meetingTitle={activeMeeting.meetingTitle}
             onMaximize={maximizeMeeting}
-            onLeave={endMeeting}
+            onLeave={handleFloatingLeave}
           />
         )}
       </LiveKitRoom>
