@@ -166,7 +166,7 @@ export const OnboardingScreen: React.FC = () => {
 
   const textMaxHeight = keyboardAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [130, 0],
+    outputRange: [200, 0],
   });
 
   const textTranslateY = keyboardAnim.interpolate({
@@ -506,12 +506,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     lineHeight: 26,
     marginTop: 8,
+    paddingBottom: 6,
     fontFamily: 'PlusJakartaSans-Medium',
   },
   textBlockAnimated: {
     alignItems: 'center',
     overflow: 'hidden',
     width: '100%',
+    paddingBottom: 8,
   },
   actionSection: {
     marginBottom: 40,
