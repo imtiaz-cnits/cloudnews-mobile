@@ -185,7 +185,12 @@
     "fileTooLargeTitle": "File Too Large",
     "fileTooLargeDesc": "File size exceeds 5MB limit. Please choose a file smaller than 5MB.",
     "maxFileSizeNotice": "Max file size: 5 MB",
-    "chooseDeviceFile": "Choose from Device"
+    "chooseDeviceFile": "Choose from Device",
+    "removeParticipantTitle": "Remove Participant",
+    "removeParticipantConfirm": "Are you sure you want to remove {{name}} from this meeting?",
+    "remove": "Remove",
+    "removedFromMeeting": "Removed from Meeting",
+    "removedByHostNotice": "You have been removed from the meeting by the host."
   },
   "schedule": {
     "title": "Schedule Meeting",

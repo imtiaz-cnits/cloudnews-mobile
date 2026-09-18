@@ -60,6 +60,7 @@ import {
   AlertCircle,
   Download,
   Eye,
+  UserX,
 } from 'lucide-react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { validateFileSize, formatBytes, MAX_FILE_SIZE_BYTES } from '../utils/fileValidation';
@@ -80,6 +81,8 @@ import {
   Modal,
   Animated,
   Share,
+  ToastAndroid,
+  FlatList,
   BackHandler,
   Image,
   Linking,
@@ -97,6 +100,7 @@ import {
   User,
   endMeeting,
   leaveMeeting,
+  removeMeetingParticipant,
   getMeetingMessages,
   sendMeetingMessage,
 } from '../services/api';
@@ -1691,6 +1695,7 @@ export const MeetingRoomContent: React.FC<{
 
   const hostIdentityRef = useRef<string | null>(null);
   const isEndingNoticeShownRef = useRef<boolean>(false);
+  const isRemovedNoticeShownRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (isHost && localParticipant) {
@@ -1745,6 +1750,88 @@ export const MeetingRoomContent: React.FC<{
       { cancelable: false }
     );
   }, [isHost, room, onLeave, t]);
+
+  const handleRemovedByHostNotice = useCallback((customMsg?: string) => {
+    if (isRemovedNoticeShownRef.current) return;
+    isRemovedNoticeShownRef.current = true;
+
+    const title = t('meeting.removedFromMeeting') || 'Removed from Meeting';
+    const message =
+      customMsg ||
+      t('meeting.removedByHostNotice') ||
+      'You have been removed from the meeting by the host.';
+
+    const autoExitTimer = setTimeout(() => {
+      try {
+        room?.disconnect();
+      } catch {}
+      onLeave();
+    }, 4500);
+
+    Alert.alert(
+      title,
+      message,
+      [
+        {
+          text: t('common.ok') || 'OK',
+          onPress: () => {
+            clearTimeout(autoExitTimer);
+            try {
+              room?.disconnect();
+            } catch {}
+            onLeave();
+          },
+        },
+      ],
+      { cancelable: false }
+    );
+  }, [room, onLeave, t]);
+
+  const handleExecuteRemoveParticipant = useCallback(async (p: Participant) => {
+    if (!room || !localParticipant || !isHost) return;
+
+    try {
+      // 1. Immediate data channel eviction signal to target participant
+      const encoder = new TextEncoder();
+      const payload = encoder.encode(
+        JSON.stringify({
+          type: 'REMOVE_PARTICIPANT',
+          targetIdentity: p.identity,
+          timestamp: Date.now(),
+        })
+      );
+      await localParticipant.publishData(payload, { reliable: true } as any).catch(() => {});
+
+      // 2. Terminate participant on LiveKit SFU via backend API and mark left in DB
+      const code = meetingCode || roomName;
+      if (code) {
+        await removeMeetingParticipant(code, p.identity);
+      }
+    } catch (err: any) {
+      console.warn('[MeetingRoomScreen] Error removing participant:', err);
+    }
+  }, [room, localParticipant, isHost, meetingCode, roomName]);
+
+  const handlePromptRemoveParticipant = useCallback((p: Participant) => {
+    const name = p.name || p.identity || t('meeting.participant') || 'Participant';
+    Alert.alert(
+      t('meeting.removeParticipantTitle') || 'Remove Participant',
+      t('meeting.removeParticipantConfirm', { name }) || `Are you sure you want to remove ${name} from this meeting?`,
+      [
+        {
+          text: t('common.cancel') || 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: t('meeting.remove') || 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            handleExecuteRemoveParticipant(p);
+          },
+        },
+      ]
+    );
+  }, [t, handleExecuteRemoveParticipant]);
 
   const handleLeaveOrEndMeeting = useCallback(async () => {
     setIsLeaveModalOpen(false);
@@ -1962,6 +2049,13 @@ export const MeetingRoomContent: React.FC<{
           return;
         }
 
+        if (parsed.type === 'REMOVE_PARTICIPANT') {
+          if (parsed.targetIdentity === localParticipant?.identity) {
+            handleRemovedByHostNotice();
+            return;
+          }
+        }
+
         if (parsed.type === 'HOST_PRESENT') {
           setHostPresenceData({ isPresent: true, hostIdentity: parsed.hostIdentity });
           return;
@@ -2093,7 +2187,7 @@ export const MeetingRoomContent: React.FC<{
     return () => {
       room.off(RoomEvent.DataReceived, onDataReceived);
     };
-  }, [room, localParticipant, handleMeetingEndedNotice]);
+  }, [room, localParticipant, handleMeetingEndedNotice, handleRemovedByHostNotice]);
 
   // Listen for host disconnection or room termination to notify guests and auto-end
   useEffect(() => {
@@ -3496,6 +3590,16 @@ export const MeetingRoomContent: React.FC<{
                   <Text style={styles.partRole}>{t('meeting.members')}</Text>
                 </View>
                 <View style={styles.partIcons}>
+                  {isHost && p.identity !== localParticipant?.identity && !checkIsParticipantHost(p) && (
+                    <TouchableOpacity
+                      style={styles.partRemoveBtn}
+                      onPress={() => handlePromptRemoveParticipant(p)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      accessibilityLabel="Remove participant"
+                    >
+                      <UserX color="#ef4444" size={17} />
+                    </TouchableOpacity>
+                  )}
                   <Mic color={p.isMicrophoneEnabled ? "#10b981" : "#ef4444"} size={18} style={{ marginRight: 8 }} />
                   <LucideVideo color={p.isCameraEnabled ? "#10b981" : "#ef4444"} size={18} />
                 </View>
@@ -4988,6 +5092,14 @@ const styles = StyleSheet.create({
   meBadgeText: { color: '#38bdf8', fontSize: 9, fontFamily: 'PlusJakartaSans-Bold' },
   partRole: { color: '#64748b', fontSize: 11, marginTop: 2, fontFamily: 'PlusJakartaSans-Medium' },
   partIcons: { flexDirection: 'row', alignItems: 'center' },
+  partRemoveBtn: {
+    padding: 6,
+    borderRadius: 6,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    marginRight: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 
   msgRow: { marginBottom: 20, alignItems: 'flex-start' },
   msgRowUser: { marginBottom: 20, alignItems: 'flex-end' },

@@ -5,6 +5,7 @@ import {
   ActivityIndicator,
   Platform,
   PermissionsAndroid,
+  Alert,
 } from 'react-native';
 import { LiveKitRoom } from '@livekit/react-native';
 import { Room, RoomConnectOptions, DisconnectReason } from 'livekit-client';
@@ -173,11 +174,18 @@ export const GlobalMeetingOverlay: React.FC = () => {
       reason === DisconnectReason.PARTICIPANT_REMOVED ||
       reason === DisconnectReason.USER_REJECTED
     ) {
+      if (reason === DisconnectReason.PARTICIPANT_REMOVED && !activeMeeting?.isHost) {
+        Alert.alert(
+          'Removed from Meeting',
+          'You have been removed from the meeting by the host.',
+          [{ text: 'OK' }]
+        );
+      }
       endMeeting();
     } else {
       console.warn('[GlobalMeetingOverlay] Transient disconnect; keeping session intact for auto-reconnect:', reason);
     }
-  }, [endMeeting]);
+  }, [activeMeeting?.isHost, endMeeting]);
 
   // Memoized connection options to prevent re-triggering connect effects
   const connectOptions = useMemo<RoomConnectOptions>(() => ({

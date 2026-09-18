@@ -185,7 +185,12 @@
     "fileTooLargeTitle": "文件过大",
     "fileTooLargeDesc": "文件大小超过5MB限制，请选择小于5MB的文件。",
     "maxFileSizeNotice": "文件大小上限：5 MB",
-    "chooseDeviceFile": "从设备中选取文件"
+    "chooseDeviceFile": "从设备中选取文件",
+    "removeParticipantTitle": "移除参会者",
+    "removeParticipantConfirm": "您确定要将 {{name}} 移出此会议吗？",
+    "remove": "移除",
+    "removedFromMeeting": "已被移出会议",
+    "removedByHostNotice": "主持人已将您移出会议。"
   },
   "schedule": {
     "title": "预定新会议",

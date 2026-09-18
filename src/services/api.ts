@@ -339,6 +339,11 @@ export const sendMeetingMessage = async (
   return (await apiClient.post(`/meetings/${cleanCode}/messages`, data)).data;
 };
 
+export const removeMeetingParticipant = async (code: string, identity: string): Promise<ApiResponse<any>> => {
+  const cleanCode = code.replace(/[\s-]/g, '');
+  return (await apiClient.post(`/meetings/${cleanCode}/participants/remove`, { identity })).data;
+};
+
 export const getMeetingInviteLink = (meetingCode: string): string => {
   return `${ENV.INVITE_WEB_URL}/room/${meetingCode}`;
 };
@@ -354,6 +359,7 @@ export default {
   validateMeeting,
   endMeeting,
   leaveMeeting,
+  removeMeetingParticipant,
   scheduleMeeting,
   getScheduledMeetings,
   getUsers,
