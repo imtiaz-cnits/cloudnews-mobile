@@ -56,11 +56,6 @@ export const OnboardingScreen: React.FC = () => {
           if (isMounted) {
             navigation.replace('Home');
           }
-        } else if (isGuest === 'true') {
-          // Clear any previous temporary guest session
-          await storage.removeItem(StorageKeys.AUTH_TOKEN);
-          await storage.removeItem(StorageKeys.USER_DATA);
-          await storage.removeItem(StorageKeys.IS_GUEST);
         }
       } catch (e) {
         console.warn('[Onboarding] Error checking auth status:', e);

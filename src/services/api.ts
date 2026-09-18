@@ -104,12 +104,14 @@ export const getStoredAuth = async (): Promise<{
       } catch {}
     }
 
-    const isAuthenticated = Boolean(token && !isGuest);
-    if (isAuthenticated && token) {
-      setAuthToken(token);
+    const hasValidToken = Boolean(token && typeof token === 'string' && token.trim().length > 0);
+    const isAuthenticated = Boolean(hasValidToken && !isGuest);
+
+    if (hasValidToken && token) {
+      setAuthToken(token.trim());
     }
 
-    return { token, user, isGuest, isAuthenticated };
+    return { token: token ? token.trim() : null, user, isGuest, isAuthenticated };
   } catch (err) {
     console.warn('[API] getStoredAuth error:', err);
     return { token: null, user: null, isGuest: false, isAuthenticated: false };
@@ -129,13 +131,17 @@ export const login = async (loginIdentifier: string, password: string): Promise<
   });
 
   if (response.data.success && response.data.data) {
-    const { token, user } = response.data.data;
+    const rawData = response.data.data;
+    const token = rawData.token || (response.data as any).token;
+    const user = rawData.user || (response.data as any).user;
+
     if (token) {
-      await storage.setItem(StorageKeys.AUTH_TOKEN, token);
-      setAuthToken(token);
+      const cleanToken = String(token).trim();
+      await storage.setItem(StorageKeys.AUTH_TOKEN, cleanToken);
+      setAuthToken(cleanToken);
     }
     if (user) {
-      await storage.setItem(StorageKeys.USER_DATA, JSON.stringify(user));
+      await storage.setItem(StorageKeys.USER_DATA, typeof user === 'string' ? user : JSON.stringify(user));
     }
     await storage.setItem(StorageKeys.IS_GUEST, 'false');
   }

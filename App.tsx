@@ -9,6 +9,7 @@ import { registerGlobals } from '@livekit/react-native';
 registerGlobals();
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { View, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
@@ -77,7 +78,11 @@ function App(): React.JSX.Element | null {
   }, []);
 
   if (!appIsReady) {
-    return null;
+    return (
+      <View style={{ flex: 1, backgroundColor: '#040912', alignItems: 'center', justifyContent: 'center' }}>
+        <ActivityIndicator size="large" color="#0284C7" />
+      </View>
+    );
   }
 
   return (

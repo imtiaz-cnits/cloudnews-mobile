@@ -66,13 +66,14 @@ export const MeetingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     );
 
     try {
-      if (isGuestSession) {
-        await storage.removeItem(StorageKeys.AUTH_TOKEN);
-        await storage.removeItem(StorageKeys.USER_DATA);
-        await storage.removeItem(StorageKeys.IS_GUEST);
-        resetToOnboarding();
-      } else {
+      const token = await storage.getItem(StorageKeys.AUTH_TOKEN);
+      const isSavedGuest = (await storage.getItem(StorageKeys.IS_GUEST)) === 'true';
+      const hasHostSession = Boolean(token && !isSavedGuest);
+
+      if (hasHostSession && !activeMeeting?.isGuest) {
         resetToHome();
+      } else {
+        resetToOnboarding();
       }
     } catch (e) {
       console.warn('[MeetingContext] Error during endMeeting cleanup:', e);
