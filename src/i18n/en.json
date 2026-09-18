@@ -106,7 +106,11 @@
     "passcodeRequired": "Passcode is required to join this meeting",
     "joinFailed": "Join Failed",
     "joiningAsHost": "Joining with Host Account: {name}",
-    "joiningAsGuest": "Joining as Guest"
+    "joiningAsGuest": "Joining as Guest",
+    "waitingForHostTitle": "Waiting for Host",
+    "waitingForHostSubtitle": "The meeting will begin automatically once the host joins.",
+    "waitingForHostChecking": "Waiting for host to begin...",
+    "cancelWaiting": "Leave / Cancel"
   },
   "meeting": {
     "connecting": "Connecting to meeting room...",

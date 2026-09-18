@@ -106,7 +106,11 @@
     "passcodeRequired": "此会议需要输入密码方可加入",
     "joinFailed": "入会失败",
     "joiningAsHost": "使用主持人账号参会：{name}",
-    "joiningAsGuest": "以访客身份参会"
+    "joiningAsGuest": "以访客身份参会",
+    "waitingForHostTitle": "等待主持人开始会议",
+    "waitingForHostSubtitle": "主持人进入后，将自动开始会议。",
+    "waitingForHostChecking": "正在等待主持人开启会议...",
+    "cancelWaiting": "离开 / 取消"
   },
   "meeting": {
     "connecting": "正在连接会议室...",

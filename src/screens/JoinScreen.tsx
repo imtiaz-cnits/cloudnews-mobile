@@ -12,6 +12,7 @@ import {
   X,
   Radio,
   Lock,
+  Clock,
 } from 'lucide-react-native';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -27,6 +28,8 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Animated,
+  Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import GradientButton from '../components/common/GradientButton';
@@ -103,6 +106,118 @@ export const JoinScreen: React.FC = () => {
   const [isValidating, setIsValidating] = useState(false);
   const [meetingInfo, setMeetingInfo] = useState<MeetingValidationInfo | null>(null);
   const validationTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Host-First Gating State
+  const [isWaitingForHost, setIsWaitingForHost] = useState(false);
+  const [waitingMeetingTitle, setWaitingMeetingTitle] = useState('');
+  const [waitingMeetingCode, setWaitingMeetingCode] = useState('');
+  const pollingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const radarAnim = useRef(new Animated.Value(0)).current;
+
+  // Pulsating radar animation loop
+  useEffect(() => {
+    let anim: Animated.CompositeAnimation | null = null;
+    if (isWaitingForHost) {
+      radarAnim.setValue(0);
+      anim = Animated.loop(
+        Animated.timing(radarAnim, {
+          toValue: 1,
+          duration: 2400,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        })
+      );
+      anim.start();
+    } else {
+      radarAnim.setValue(0);
+    }
+    return () => {
+      if (anim) anim.stop();
+    };
+  }, [isWaitingForHost, radarAnim]);
+
+  const clearWaitingState = useCallback(() => {
+    if (pollingTimerRef.current) {
+      clearInterval(pollingTimerRef.current);
+      pollingTimerRef.current = null;
+    }
+    setIsWaitingForHost(false);
+    setLoading(false);
+  }, []);
+
+  // Ensure polling timer is strictly cleared on component unmount
+  useEffect(() => {
+    return () => {
+      if (pollingTimerRef.current) {
+        clearInterval(pollingTimerRef.current);
+        pollingTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const startHostPolling = useCallback(
+    (
+      cleanCode: string,
+      passcodeVal?: string,
+      effectiveDisplayName?: string,
+      isGuestJoin?: boolean
+    ) => {
+      if (pollingTimerRef.current) {
+        clearInterval(pollingTimerRef.current);
+      }
+
+      setIsWaitingForHost(true);
+      setLoading(false);
+
+      pollingTimerRef.current = setInterval(async () => {
+        try {
+          console.log('[Join] Polling for host on code:', cleanCode);
+          const res = await joinMeeting(cleanCode, passcodeVal);
+
+          if (res?.success && res.data?.livekit_token) {
+            console.log('[Join] Host has arrived! Connecting to LiveKit room...');
+            clearWaitingState();
+
+            const resolvedServerUrl = (res.data as any).livekit_url || ENV.LIVEKIT_WS_URL;
+            const resolvedRoomName = res.data.room_name;
+            const resolvedMeetingTitle =
+              (res.data as any).title ||
+              meetingInfo?.title ||
+              res.data.meeting_code ||
+              cleanCode;
+
+            startMeeting({
+              roomName: resolvedRoomName,
+              token: res.data.livekit_token,
+              serverUrl: resolvedServerUrl,
+              displayName: effectiveDisplayName || 'Participant',
+              isGuest: Boolean(isGuestJoin),
+              meetingCode: res.data.meeting_code || cleanCode,
+              meetingTitle: resolvedMeetingTitle,
+              isHost: isGuestJoin ? false : Boolean(res.data.is_host),
+              muteAudio: muteAudio,
+              muteVideo: muteVideo,
+            });
+
+            if (isGuestJoin) {
+              navigation.replace('Onboarding');
+            } else {
+              navigation.replace('Home');
+            }
+          }
+        } catch (pollErr: any) {
+          const errCode = pollErr.response?.data?.code;
+          const errStatus = pollErr.response?.data?.status;
+          if (errCode === 'WAITING_FOR_HOST' || errStatus === 'waiting_for_host') {
+            // Host has not joined yet; silently continue polling
+            return;
+          }
+          console.warn('[Join] Polling error:', pollErr.message);
+        }
+      }, 3500);
+    },
+    [clearWaitingState, meetingInfo, muteAudio, muteVideo, navigation, startMeeting]
+  );
 
   // Initialize display name from storage
   useEffect(() => {
@@ -248,6 +363,7 @@ export const JoinScreen: React.FC = () => {
       hostUserName ||
       `Guest_${Math.floor(1000 + Math.random() * 9000)}`;
 
+    let isGuestJoin = true;
     setLoading(true);
     try {
       // 1. Determine if this join is a guest join
@@ -256,7 +372,7 @@ export const JoinScreen: React.FC = () => {
 
       // CRITICAL: If the user already has an active authenticated host session, NEVER downgrade or wipe host token
       const hasHostSession = Boolean(token && !isSavedGuest);
-      const isGuestJoin = !hasHostSession;
+      isGuestJoin = !hasHostSession;
 
       if (isGuestJoin) {
         let hasValidGuestSession = false;
@@ -313,9 +429,25 @@ export const JoinScreen: React.FC = () => {
             Alert.alert(t('common.error'), 'Host session expired. Please log in again.');
             return;
           }
+        } else if (
+          joinErr.response?.data?.code === 'WAITING_FOR_HOST' ||
+          joinErr.response?.data?.status === 'waiting_for_host'
+        ) {
+          meetingRes = joinErr.response.data;
         } else {
           throw joinErr;
         }
+      }
+
+      // Check if waiting for host
+      if (
+        meetingRes?.code === 'WAITING_FOR_HOST' ||
+        meetingRes?.status === 'waiting_for_host'
+      ) {
+        setWaitingMeetingTitle(meetingInfo?.title || cleanCode);
+        setWaitingMeetingCode(formatMeetingCodeDisplay(cleanCode));
+        startHostPolling(cleanCode, passcode.trim() || undefined, effectiveDisplayName, isGuestJoin);
+        return;
       }
 
       if (meetingRes?.success && meetingRes.data?.livekit_token) {
@@ -355,6 +487,15 @@ export const JoinScreen: React.FC = () => {
       }
     } catch (error: any) {
       if (
+        error.response?.data?.code === 'WAITING_FOR_HOST' ||
+        error.response?.data?.status === 'waiting_for_host'
+      ) {
+        setWaitingMeetingTitle(meetingInfo?.title || cleanCode);
+        setWaitingMeetingCode(formatMeetingCodeDisplay(cleanCode));
+        startHostPolling(cleanCode, passcode.trim() || undefined, effectiveDisplayName, isGuestJoin);
+        return;
+      }
+      if (
         error.response?.data?.data?.requires_passcode ||
         error.response?.data?.requires_passcode
       ) {
@@ -375,32 +516,146 @@ export const JoinScreen: React.FC = () => {
     >
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} translucent backgroundColor="transparent" />
 
-      {/* Top Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 8 }, !isDark && { borderBottomColor: colors.border }]}>
-        <TouchableOpacity
-          onPress={() => {
-            if (navigation.canGoBack()) {
-              navigation.goBack();
-            } else if (isHostUser) {
-              navigation.replace('Home');
-            } else {
-              navigation.replace('Onboarding');
-            }
-          }}
-          style={[styles.backBtn, !isDark && { backgroundColor: colors.card, borderColor: colors.border }]}
-          activeOpacity={0.7}
-        >
-          <ChevronLeft color={isDark ? '#F8FAFC' : colors.textPrimary} size={22} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, !isDark && { color: colors.textPrimary }]}>{t('join.title')}</Text>
-        <View style={{ width: 42 }} />
-      </View>
+      {isWaitingForHost ? (
+        /* Dedicated Sleek Standby View */
+        <View style={[styles.standbyContainer, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 }]}>
+          {/* Standby Header */}
+          <View style={styles.standbyHeader}>
+            <TouchableOpacity
+              onPress={clearWaitingState}
+              style={[styles.backBtn, !isDark && { backgroundColor: colors.card, borderColor: colors.border }]}
+              activeOpacity={0.7}
+            >
+              <ChevronLeft color={isDark ? '#F8FAFC' : colors.textPrimary} size={22} />
+            </TouchableOpacity>
+            <Text style={[styles.headerTitle, !isDark && { color: colors.textPrimary }]}>
+              {t('join.waitingForHostTitle')}
+            </Text>
+            <View style={{ width: 42 }} />
+          </View>
 
-      <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 120 }]}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
+          {/* Standby Content */}
+          <View style={styles.standbyContent}>
+            {/* Pulsating Radar Concentric Rings */}
+            <View style={styles.radarContainer}>
+              <Animated.View
+                style={[
+                  styles.radarWave,
+                  {
+                    borderColor: colors.primary,
+                    transform: [
+                      {
+                        scale: radarAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0.8, 2.4],
+                        }),
+                      },
+                    ],
+                    opacity: radarAnim.interpolate({
+                      inputRange: [0, 0.4, 1],
+                      outputRange: [0.6, 0.25, 0],
+                    }),
+                  },
+                ]}
+              />
+              <Animated.View
+                style={[
+                  styles.radarWave,
+                  {
+                    borderColor: colors.primary,
+                    transform: [
+                      {
+                        scale: radarAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0.8, 1.7],
+                        }),
+                      },
+                    ],
+                    opacity: radarAnim.interpolate({
+                      inputRange: [0, 0.5, 1],
+                      outputRange: [0.8, 0.4, 0],
+                    }),
+                  },
+                ]}
+              />
+              <View style={[styles.radarCenterCircle, { backgroundColor: colors.primary }]}>
+                <Clock color="#FFFFFF" size={36} />
+              </View>
+            </View>
+
+            {/* Standby Card Info */}
+            <View style={[styles.standbyCard, !isDark && { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Text style={[styles.standbyTitle, !isDark && { color: colors.textPrimary }]}>
+                {t('join.waitingForHostTitle')}
+              </Text>
+              <Text style={[styles.standbySubtitle, !isDark && { color: colors.textSecondary }]}>
+                {t('join.waitingForHostSubtitle')}
+              </Text>
+
+              {/* Meeting Details Pill */}
+              <View style={[styles.standbyInfoPill, !isDark && { backgroundColor: colors.cardSubtle }]}>
+                <Radio color={colors.primary} size={15} style={{ marginRight: 8 }} />
+                <Text style={[styles.standbyCodeText, !isDark && { color: colors.textPrimary }]}>
+                  {t('join.idPrefix')} {waitingMeetingCode || meetingId}
+                </Text>
+              </View>
+
+              {waitingMeetingTitle ? (
+                <Text style={[styles.standbyMeetingTitle, !isDark && { color: colors.textMuted }]} numberOfLines={1}>
+                  {waitingMeetingTitle}
+                </Text>
+              ) : null}
+
+              {/* Live Polling Status Indicator */}
+              <View style={styles.standbyStatusRow}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <Text style={[styles.standbyStatusText, !isDark && { color: colors.textSecondary }]}>
+                  {t('join.waitingForHostChecking')}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Action Button: Leave / Cancel */}
+          <View style={styles.standbyBottom}>
+            <TouchableOpacity
+              onPress={clearWaitingState}
+              style={[styles.cancelStandbyBtn, !isDark && { backgroundColor: colors.card, borderColor: colors.border }]}
+              activeOpacity={0.7}
+            >
+              <X color="#EF4444" size={18} style={{ marginRight: 8 }} />
+              <Text style={styles.cancelStandbyText}>{t('join.cancelWaiting')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : (
+        <>
+          {/* Top Header */}
+          <View style={[styles.header, { paddingTop: insets.top + 8 }, !isDark && { borderBottomColor: colors.border }]}>
+            <TouchableOpacity
+              onPress={() => {
+                if (navigation.canGoBack()) {
+                  navigation.goBack();
+                } else if (isHostUser) {
+                  navigation.replace('Home');
+                } else {
+                  navigation.replace('Onboarding');
+                }
+              }}
+              style={[styles.backBtn, !isDark && { backgroundColor: colors.card, borderColor: colors.border }]}
+              activeOpacity={0.7}
+            >
+              <ChevronLeft color={isDark ? '#F8FAFC' : colors.textPrimary} size={22} />
+            </TouchableOpacity>
+            <Text style={[styles.headerTitle, !isDark && { color: colors.textPrimary }]}>{t('join.title')}</Text>
+            <View style={{ width: 42 }} />
+          </View>
+
+          <ScrollView
+            contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 120 }]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
         {/* Meeting ID or Link Input */}
         <View style={styles.section}>
           <Text style={[styles.sectionLabel, !isDark && { color: colors.textSecondary }]}>{t('join.meetingIdLabel')}</Text>
@@ -571,23 +826,25 @@ export const JoinScreen: React.FC = () => {
         </View>
       </ScrollView>
 
-      {/* Floating Bottom Join Button */}
-      <View style={[styles.bottomContainer, { paddingBottom: insets.bottom + 16 }, !isDark && { backgroundColor: colors.background }]}>
-        <GradientButton
-          title={loading ? t('join.joiningRoom') : t('join.enterMeeting')}
-          icon={
-            loading ? (
-              <ActivityIndicator color="#FFFFFF" size="small" />
-            ) : (
-              <CheckCircle2 color="#FFFFFF" size={20} />
-            )
-          }
-          onPress={handleJoin}
-          style={styles.joinBtn}
-          colors={['#00A8FF', '#0066CC']}
-          disabled={loading || !meetingId.trim()}
-        />
-      </View>
+          {/* Floating Bottom Join Button */}
+          <View style={[styles.bottomContainer, { paddingBottom: insets.bottom + 16 }, !isDark && { backgroundColor: colors.background }]}>
+            <GradientButton
+              title={loading ? t('join.joiningRoom') : t('join.enterMeeting')}
+              icon={
+                loading ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <CheckCircle2 color="#FFFFFF" size={20} />
+                )
+              }
+              onPress={handleJoin}
+              style={styles.joinBtn}
+              colors={['#00A8FF', '#0066CC']}
+              disabled={loading || !meetingId.trim()}
+            />
+          </View>
+        </>
+      )}
     </KeyboardAvoidingView>
   );
 };
@@ -832,6 +1089,124 @@ const styles = StyleSheet.create({
   hostBadgeText: {
     fontSize: 12,
     color: '#10B981',
+    fontWeight: '600',
+  },
+  standbyContainer: {
+    flex: 1,
+    paddingHorizontal: 20,
+    justifyContent: 'space-between',
+  },
+  standbyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 16,
+  },
+  standbyContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  radarContainer: {
+    width: 160,
+    height: 160,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  radarWave: {
+    position: 'absolute',
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    borderWidth: 2,
+  },
+  radarCenterCircle: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#00A8FF',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  standbyCard: {
+    width: '100%',
+    backgroundColor: '#0B1528',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+  },
+  standbyTitle: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  standbySubtitle: {
+    color: '#94A3B8',
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: 'center',
+    marginBottom: 20,
+    paddingHorizontal: 12,
+  },
+  standbyInfoPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#132238',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    marginBottom: 10,
+  },
+  standbyCodeText: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  standbyMeetingTitle: {
+    color: '#64748B',
+    fontSize: 13,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  standbyStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  standbyStatusText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    marginLeft: 10,
+  },
+  standbyBottom: {
+    paddingTop: 16,
+    alignItems: 'center',
+  },
+  cancelStandbyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  cancelStandbyText: {
+    color: '#EF4444',
+    fontSize: 16,
     fontWeight: '600',
   },
 });
