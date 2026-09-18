@@ -72,6 +72,7 @@ import {
   TouchableOpacity,
   View,
   Dimensions,
+  useWindowDimensions,
   TextInput,
   ScrollView,
   PermissionsAndroid,
@@ -194,6 +195,7 @@ const ParticipantCard: React.FC<{
   isSingleOrFullScreen?: boolean;
   showControls?: boolean;
   isGridMode?: boolean;
+  density?: 'spacious' | 'normal' | 'compact' | 'ultra-compact';
   insets?: { top: number; bottom: number; left: number; right: number };
   onSwitchCamera?: () => void;
   onToggleLayout?: () => void;
@@ -208,6 +210,7 @@ const ParticipantCard: React.FC<{
   isSingleOrFullScreen = false,
   showControls = true,
   isGridMode = false,
+  density = 'normal',
   insets,
   onSwitchCamera,
   onToggleLayout,
@@ -263,6 +266,83 @@ const ParticipantCard: React.FC<{
       return cameraFacing === 'user';
     }, [isLocal, cameraFacing, cameraTrack]);
 
+    const avatarMetrics = useMemo(() => {
+      if (isSingleOrFullScreen) {
+        return {
+          circleSize: 96,
+          radius: 48,
+          fontSize: 32,
+          nameSize: 18,
+          nameMarginTop: 14,
+          micSize: 17,
+          hostBadgePaddingH: 12,
+          hostBadgePaddingV: 5,
+          hostBadgeFontSize: 12,
+          actionBtnSize: 44,
+          actionIconSize: 20,
+        };
+      }
+      switch (density) {
+        case 'spacious':
+          return {
+            circleSize: 72,
+            radius: 36,
+            fontSize: 24,
+            nameSize: 16,
+            nameMarginTop: 10,
+            micSize: 16,
+            hostBadgePaddingH: 10,
+            hostBadgePaddingV: 4,
+            hostBadgeFontSize: 11,
+            actionBtnSize: 36,
+            actionIconSize: 16,
+          };
+        case 'compact':
+          return {
+            circleSize: 48,
+            radius: 24,
+            fontSize: 16,
+            nameSize: 12,
+            nameMarginTop: 6,
+            micSize: 13,
+            hostBadgePaddingH: 7,
+            hostBadgePaddingV: 2.5,
+            hostBadgeFontSize: 10,
+            actionBtnSize: 28,
+            actionIconSize: 13,
+          };
+        case 'ultra-compact':
+          return {
+            circleSize: 38,
+            radius: 19,
+            fontSize: 13,
+            nameSize: 11,
+            nameMarginTop: 4,
+            micSize: 11,
+            hostBadgePaddingH: 6,
+            hostBadgePaddingV: 2,
+            hostBadgeFontSize: 9,
+            actionBtnSize: 24,
+            actionIconSize: 11,
+          };
+        case 'normal':
+        default:
+          return {
+            circleSize: 58,
+            radius: 29,
+            fontSize: 19,
+            nameSize: 14,
+            nameMarginTop: 8,
+            micSize: 14,
+            hostBadgePaddingH: 8,
+            hostBadgePaddingV: 3,
+            hostBadgeFontSize: 10.5,
+            actionBtnSize: 32,
+            actionIconSize: 15,
+          };
+      }
+    }, [isSingleOrFullScreen, density]);
+
     return (
       <View
         style={[
@@ -274,37 +354,66 @@ const ParticipantCard: React.FC<{
         ]}
       >
         {isCameraEnabled && cameraTrack?.publication?.track ? (
-          <VideoTrack
-            trackRef={cameraTrack}
-            style={styles.cardVideo}
-            mirror={Boolean(isLocal && isFrontCamera)}
-          />
+          <>
+            <VideoTrack
+              trackRef={cameraTrack}
+              style={styles.cardVideo}
+              mirror={Boolean(isLocal && isFrontCamera)}
+            />
+            {/* Bottom translucent name pill so participant name & mic are always visible on video */}
+            <View style={[styles.videoNamePill, { bottom: density === 'ultra-compact' ? 5 : 8, left: density === 'ultra-compact' ? 5 : 8 }]}>
+              <Text style={[styles.videoNameText, { fontSize: avatarMetrics.nameSize }]} numberOfLines={1}>
+                {displayName}
+              </Text>
+              {isMicEnabled ? (
+                <Mic color="#10b981" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
+              ) : (
+                <MicOff color="#ef4444" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
+              )}
+            </View>
+          </>
         ) : (
           <View style={[styles.avatarContainer, isSingleOrFullScreen && styles.fullScreenAvatarContainer]}>
             <LinearGradient
               colors={isLocal ? ['#00A8FF', '#0066CC'] : ['#10b981', '#059669']}
-              style={isSingleOrFullScreen ? styles.largeAvatarCircle : styles.avatarCircle}
+              style={[
+                isSingleOrFullScreen ? styles.largeAvatarCircle : styles.avatarCircle,
+                !isSingleOrFullScreen && {
+                  width: avatarMetrics.circleSize,
+                  height: avatarMetrics.circleSize,
+                  borderRadius: avatarMetrics.radius,
+                },
+              ]}
             >
               <Text
                 style={[
                   isSingleOrFullScreen ? styles.largeAvatarText : styles.avatarText,
-                  getAvatarTextStyle(displayName, isSingleOrFullScreen ? 32 : 20),
+                  { fontSize: avatarMetrics.fontSize },
+                  getAvatarTextStyle(displayName, avatarMetrics.fontSize),
                 ]}
               >
                 {getInitials(displayName)}
               </Text>
             </LinearGradient>
-            <View style={isSingleOrFullScreen ? styles.largeAvatarNameRow : styles.gridAvatarNameRow}>
+            <View
+              style={[
+                isSingleOrFullScreen ? styles.largeAvatarNameRow : styles.gridAvatarNameRow,
+                !isSingleOrFullScreen && { marginTop: avatarMetrics.nameMarginTop },
+              ]}
+            >
               <Text
-                style={isSingleOrFullScreen ? styles.largeAvatarName : styles.gridAvatarName}
+                style={[
+                  isSingleOrFullScreen ? styles.largeAvatarName : styles.gridAvatarName,
+                  !isSingleOrFullScreen && { fontSize: avatarMetrics.nameSize },
+                ]}
                 numberOfLines={1}
               >
                 {displayName}
               </Text>
               {isMicEnabled ? (
-                <Mic color="#10b981" size={isSingleOrFullScreen ? 17 : 14} style={{ marginLeft: 5 }} />
+                <Mic color="#10b981" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
               ) : (
-                <MicOff color="#ef4444" size={isSingleOrFullScreen ? 17 : 14} style={{ marginLeft: 5 }} />
+                <MicOff color="#ef4444" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
               )}
             </View>
           </View>
@@ -323,7 +432,11 @@ const ParticipantCard: React.FC<{
               styles.cardTopRow,
               isSingleOrFullScreen
                 ? { top: (insets?.top ?? 0) + (showControls ? 64 : 16) }
-                : { top: 10 },
+                : {
+                    top: density === 'ultra-compact' ? 6 : 8,
+                    left: density === 'ultra-compact' ? 8 : 10,
+                    right: density === 'ultra-compact' ? 8 : 10,
+                  },
             ]}
             pointerEvents="box-none"
           >
@@ -339,8 +452,24 @@ const ParticipantCard: React.FC<{
                 </TouchableOpacity>
               )}
               {isHost && (
-                <View style={styles.hostBadge}>
-                  <Text style={styles.hostBadgeText}>{t('meeting.host')}</Text>
+                <View
+                  style={[
+                    styles.hostBadge,
+                    !isSingleOrFullScreen && {
+                      paddingHorizontal: avatarMetrics.hostBadgePaddingH,
+                      paddingVertical: avatarMetrics.hostBadgePaddingV,
+                      borderRadius: density === 'ultra-compact' ? 4 : 6,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.hostBadgeText,
+                      !isSingleOrFullScreen && { fontSize: avatarMetrics.hostBadgeFontSize },
+                    ]}
+                  >
+                    {t('meeting.host')}
+                  </Text>
                 </View>
               )}
             </View>
@@ -348,29 +477,43 @@ const ParticipantCard: React.FC<{
             <View style={styles.rightBadgeActions} pointerEvents="auto">
               {isLocal && isCameraEnabled && (
                 <TouchableOpacity
-                  style={styles.actionIconBtn}
+                  style={[
+                    styles.actionIconBtn,
+                    !isSingleOrFullScreen && {
+                      width: avatarMetrics.actionBtnSize,
+                      height: avatarMetrics.actionBtnSize,
+                      borderRadius: avatarMetrics.actionBtnSize / 2,
+                    },
+                  ]}
                   onPress={() => {
                     console.log('[CameraSwitch] Button pressed in ParticipantCard!');
                     onSwitchCamera?.();
                   }}
-                  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                   activeOpacity={0.7}
                 >
-                  <SwitchCamera color="#FFF" size={20} />
+                  <SwitchCamera color="#FFF" size={avatarMetrics.actionIconSize} />
                 </TouchableOpacity>
               )}
 
               {onToggleLayout && (
                 <TouchableOpacity
-                  style={styles.actionIconBtn}
+                  style={[
+                    styles.actionIconBtn,
+                    !isSingleOrFullScreen && {
+                      width: avatarMetrics.actionBtnSize,
+                      height: avatarMetrics.actionBtnSize,
+                      borderRadius: avatarMetrics.actionBtnSize / 2,
+                    },
+                  ]}
                   onPress={onToggleLayout}
-                  hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                   activeOpacity={0.7}
                 >
                   {isGridMode ? (
-                    <Maximize2 color="#FFF" size={20} />
+                    <Maximize2 color="#FFF" size={avatarMetrics.actionIconSize} />
                   ) : (
-                    <LayoutGrid color="#FFF" size={20} />
+                    <LayoutGrid color="#FFF" size={avatarMetrics.actionIconSize} />
                   )}
                 </TouchableOpacity>
               )}
@@ -1000,6 +1143,7 @@ export const MeetingRoomContent: React.FC<{
   hasCameraPermission = true,
 }) => {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const room = useRoomContext();
   const { t } = useTranslation();
 
@@ -1593,6 +1737,90 @@ export const MeetingRoomContent: React.FC<{
 
     return Array.from(seenMap.values());
   }, [isHost, allParticipants, waitingGuests, localParticipant]);
+
+  // Dynamic adaptive grid layout configuration: automatically shrinks card size, adapts columns/rows, and allows scrolling
+  const gridLayout = useMemo(() => {
+    const isPortrait = windowHeight >= windowWidth;
+    const availableWidth = windowWidth - 20; // 10 padding each side in multiGridContainer
+    const availableHeight = Math.max(
+      320,
+      windowHeight - (insets.top + 68) - (insets.bottom + 92) - 20
+    );
+
+    const participantCount = activeMeetingParticipants.length;
+    const totalItems = participantCount + (activeScreenShare ? 1 : 0);
+
+    let cols = 2;
+    let rows = 2;
+    let gap = 8;
+    let density: 'spacious' | 'normal' | 'compact' | 'ultra-compact' = 'normal';
+
+    if (totalItems <= 1) {
+      cols = 1;
+      rows = 1;
+      gap = 0;
+      density = 'spacious';
+    } else if (totalItems === 2) {
+      if (isPortrait) {
+        cols = 1;
+        rows = 2;
+        gap = 10;
+        density = 'spacious';
+      } else {
+        cols = 2;
+        rows = 1;
+        gap = 10;
+        density = 'spacious';
+      }
+    } else if (totalItems <= 4) {
+      cols = 2;
+      rows = 2;
+      gap = 8;
+      density = 'normal';
+    } else if (totalItems <= 6) {
+      cols = 2;
+      rows = 3;
+      gap = 8;
+      density = 'compact';
+    } else if (totalItems <= 8) {
+      cols = 2;
+      rows = 4;
+      gap = 6;
+      density = 'compact';
+    } else {
+      // 9, 10 or more participants
+      cols = availableWidth >= 550 ? 3 : 2;
+      const heightFor5 = Math.floor((availableHeight - (4 * 6)) / 5);
+      if (heightFor5 >= 118 && totalItems >= 9) {
+        rows = 5;
+      } else {
+        rows = 4;
+      }
+      gap = 6;
+      density = 'ultra-compact';
+    }
+
+    const cardWidth = Math.floor((availableWidth - ((cols - 1) * gap)) / cols);
+    let cardHeight: number;
+    if (totalItems <= 1) {
+      cardHeight = Math.min(Math.floor(availableHeight * 0.88), 480);
+    } else if (totalItems <= 8 || (rows === 5 && totalItems <= 10)) {
+      cardHeight = Math.max(114, Math.floor((availableHeight - ((rows - 1) * gap)) / rows));
+    } else {
+      // Exceeds visible rows (e.g. >8 or >10): fix cardHeight so it smoothly scrolls
+      cardHeight = Math.max(118, Math.floor((availableHeight - ((rows - 1) * gap)) / rows));
+    }
+
+    return {
+      cols,
+      rows,
+      gap,
+      cardWidth,
+      cardHeight,
+      density,
+      isScrollable: totalItems > (cols * rows),
+    };
+  }, [windowWidth, windowHeight, insets.top, insets.bottom, activeMeetingParticipants.length, activeScreenShare]);
 
   // User manual layout toggle: full screen vs grid mode
   const [isGridMode, setIsGridMode] = useState(false);
@@ -3202,43 +3430,70 @@ export const MeetingRoomContent: React.FC<{
             style={styles.fullScreenCard}
           />
         ) : (
-          <TouchableOpacity
-            activeOpacity={1}
-            style={styles.grid}
-            onPress={handleScreenTap}
+          <ScrollView
+            style={styles.gridScrollView}
+            contentContainerStyle={[
+              styles.gridContentContainer,
+              !gridLayout.isScrollable && styles.gridContentCenter,
+            ]}
+            showsVerticalScrollIndicator={gridLayout.isScrollable}
+            bounces={gridLayout.isScrollable}
+            overScrollMode="always"
+            keyboardShouldPersistTaps="handled"
           >
-            {activeScreenShare && (
-              <TouchableOpacity
-                activeOpacity={0.9}
-                style={[styles.participantCard, styles.gridScreenShareCard]}
-                onPress={() => setIsGridMode(false)}
-              >
-                <VideoTrack trackRef={activeScreenShare as any} style={styles.cardVideo} objectFit="contain" />
-                <View style={styles.gridScreenShareBadge}>
-                  <MonitorUp color="#00A8FF" size={14} />
-                  <Text style={styles.gridScreenShareText}>
-                    {activeScreenShare.participant?.name || 'Screen Share'} (Tap for Full Screen)
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            )}
-            {activeMeetingParticipants.map((p) => (
-              <ParticipantCard
-                key={`participant-${p.identity}`}
-                participant={p}
-                isLocal={localParticipant && p.identity === localParticipant.identity}
-                cameraFacing={cameraFacing}
-                isSingleOrFullScreen={false}
-                showControls={isNativePip ? false : showControls}
-                isGridMode={true}
-                onToggleLayout={handleToggleLayout}
-                insets={insets}
-                onSwitchCamera={handleSwitchCamera}
-                onPress={() => handleParticipantPress(p.identity)}
-                style={activeMeetingParticipants.length === 1 && !activeScreenShare && { width: SCREEN_WIDTH - 24, height: '72%', alignSelf: 'center' }}
-              />
-            ))}
-          </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={1}
+              style={[
+                styles.grid,
+                { gap: gridLayout.gap },
+              ]}
+              onPress={handleScreenTap}
+            >
+              {activeScreenShare && (
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  style={[
+                    styles.participantCard,
+                    styles.gridScreenShareCard,
+                    {
+                      width: gridLayout.cols === 1 ? gridLayout.cardWidth : '100%',
+                      height: Math.min(220, Math.floor(gridLayout.cardHeight * 1.3)),
+                    },
+                  ]}
+                  onPress={() => setIsGridMode(false)}
+                >
+                  <VideoTrack trackRef={activeScreenShare as any} style={styles.cardVideo} objectFit="contain" />
+                  <View style={styles.gridScreenShareBadge}>
+                    <MonitorUp color="#00A8FF" size={14} />
+                    <Text style={styles.gridScreenShareText}>
+                      {activeScreenShare.participant?.name || 'Screen Share'} (Tap for Full Screen)
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+              {activeMeetingParticipants.map((p) => (
+                <ParticipantCard
+                  key={`participant-${p.identity}`}
+                  participant={p}
+                  isLocal={localParticipant && p.identity === localParticipant.identity}
+                  cameraFacing={cameraFacing}
+                  isSingleOrFullScreen={false}
+                  showControls={isNativePip ? false : showControls}
+                  isGridMode={true}
+                  density={gridLayout.density}
+                  onToggleLayout={handleToggleLayout}
+                  insets={insets}
+                  onSwitchCamera={handleSwitchCamera}
+                  onPress={() => handleParticipantPress(p.identity)}
+                  style={{
+                    width: gridLayout.cardWidth,
+                    height: gridLayout.cardHeight,
+                    borderRadius: gridLayout.density === 'ultra-compact' ? 12 : gridLayout.density === 'compact' ? 14 : 16,
+                  }}
+                />
+              ))}
+            </TouchableOpacity>
+          </ScrollView>
         )}
         {activeMeetingParticipants.length === 0 && !activeScreenShare && (
           <View style={styles.waitingContainer}>
@@ -4200,8 +4455,29 @@ const styles = StyleSheet.create({
   gridContainer: { flex: 1, width: '100%', height: '100%', backgroundColor: '#050B14' },
   fullScreenGridContainer: { padding: 0, backgroundColor: '#050B14' },
   multiGridContainer: { padding: 10, backgroundColor: '#050B14' },
-  grid: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center', alignContent: 'center', backgroundColor: '#050B14' },
+  gridScrollView: { flex: 1, width: '100%' },
+  gridContentContainer: { flexGrow: 1, paddingVertical: 2 },
+  gridContentCenter: { justifyContent: 'center' },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', alignContent: 'center', backgroundColor: '#050B14', minHeight: '100%', width: '100%' },
   participantCard: { width: (SCREEN_WIDTH - 30) / 2, height: '48%', backgroundColor: '#0B1728', borderRadius: 20, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
+  videoNamePill: {
+    position: 'absolute',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(5, 11, 20, 0.72)',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    maxWidth: '85%',
+    zIndex: 2,
+  },
+  videoNameText: {
+    color: '#FFFFFF',
+    fontFamily: 'PlusJakartaSans-Bold',
+    letterSpacing: -0.2,
+  },
   fullScreenCard: { width: '100%', height: '100%', borderRadius: 0, borderWidth: 0, backgroundColor: '#050B14', overflow: 'hidden' },
   activeSpeakerCard: { borderColor: '#10b981', borderWidth: 2 },
   cardVideo: { width: '100%', height: '100%' },
