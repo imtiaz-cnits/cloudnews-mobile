@@ -173,6 +173,7 @@ async function requestPermissions(): Promise<boolean> {
 
 interface ChatMessage {
   id: string;
+  clientMsgId?: string;
   sender: string;
   text: string;
   time: string;
@@ -1729,41 +1730,58 @@ export const MeetingRoomContent: React.FC<{
           const isSenderSelf = Boolean(
             (localParticipant?.name && m.sender_name === localParticipant.name) ||
             (currentUserName && m.sender_name === currentUserName) ||
-            (isHost && m.sender_name === 'Host')
+            (isHost && (m.sender_name === 'Host' || m.sender_name === currentUserName))
           );
-          const timeFormatted = m.created_at
-            ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          const rawTime = m.timestamp || m.created_at;
+          const timeFormatted = rawTime
+            ? new Date(rawTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+          const messageText = m.message || m.text || '';
+          const msgType = m.file_type || m.type || 'text';
+          const mediaUrl = m.file_url || m.media_url;
+          const clientMsgId = m.client_msg_id;
+          const resolvedId = clientMsgId || String(m.id);
+
           return {
-            id: String(m.id),
+            id: resolvedId,
+            clientMsgId: clientMsgId,
             sender: m.sender_name || 'Participant',
-            text: m.text || '',
+            text: messageText,
             time: timeFormatted,
             isSelf: isSenderSelf,
-            type: m.type || 'text',
+            type: msgType,
             fileName: m.file_name,
             fileSize: m.file_size,
-            mediaUrl: sanitizeMediaUrl(m.media_url),
+            mediaUrl: sanitizeMediaUrl(mediaUrl),
             duration: m.duration,
           };
         });
 
-        // Merge with existing messages and deduplicate
+        // Merge with existing messages and deduplicate by clientMsgId, ID, and signature
         setMessages(prev => {
           const map = new Map<string, ChatMessage>();
           // 1. Add historical messages from database
-          historyMessages.forEach(msg => map.set(msg.id, msg));
+          historyMessages.forEach(msg => {
+            map.set(msg.id, msg);
+            if (msg.clientMsgId) {
+              map.set(msg.clientMsgId, msg);
+            }
+          });
           // 2. Add local/live messages not yet in history
           prev.forEach(msg => {
             const alreadyInHistory = historyMessages.some(
-              h => h.id === msg.id || (h.text === msg.text && h.sender === msg.sender && h.type === msg.type)
+              h =>
+                h.id === msg.id ||
+                (msg.clientMsgId && (h.clientMsgId === msg.clientMsgId || h.id === msg.clientMsgId)) ||
+                (h.clientMsgId && h.clientMsgId === msg.id) ||
+                (h.text === msg.text && h.sender === msg.sender && h.type === msg.type)
             );
             if (!alreadyInHistory) {
               map.set(msg.id, msg);
             }
           });
-          return Array.from(map.values());
+          return Array.from(new Set(map.values()));
         });
       }
     } catch (err) {
@@ -1781,6 +1799,20 @@ export const MeetingRoomContent: React.FC<{
       fetchMeetingMessages();
     }
   }, [isChatOpen, fetchMeetingMessages]);
+
+  // Refresh messages on room connected and reconnected events
+  useEffect(() => {
+    if (!room) return;
+    const onRefreshMessages = () => {
+      fetchMeetingMessages();
+    };
+    room.on(RoomEvent.Connected, onRefreshMessages);
+    room.on(RoomEvent.Reconnected, onRefreshMessages);
+    return () => {
+      room.off(RoomEvent.Connected, onRefreshMessages);
+      room.off(RoomEvent.Reconnected, onRefreshMessages);
+    };
+  }, [room, fetchMeetingMessages]);
 
   // Active meeting participants (for video grid and members list)
   const activeMeetingParticipants = useMemo(() => {
@@ -2459,20 +2491,33 @@ export const MeetingRoomContent: React.FC<{
         }
 
         if (parsed.type === 'CHAT') {
+          const clientMsgId = parsed.client_msg_id || parsed.id;
+          const resolvedText = parsed.message || parsed.text || '';
+          const resolvedType = parsed.file_type || parsed.msgType || parsed.type || 'text';
+          const resolvedMediaUrl = sanitizeMediaUrl(parsed.file_url || parsed.mediaUrl);
+
           const newMessage: ChatMessage = {
-            id: parsed.id || Math.random().toString(36).substr(2, 9),
+            id: clientMsgId || Math.random().toString(36).substr(2, 9),
+            clientMsgId: clientMsgId,
             sender: parsed.sender || participant?.name || participant?.identity || 'Unknown',
-            text: parsed.text || '',
+            text: resolvedText,
             time: parsed.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             isSelf: false,
-            type: parsed.msgType || 'text',
-            fileName: parsed.fileName,
-            fileSize: parsed.fileSize,
-            mediaUrl: sanitizeMediaUrl(parsed.mediaUrl),
+            type: resolvedType,
+            fileName: parsed.fileName || parsed.file_name,
+            fileSize: parsed.fileSize || parsed.file_size,
+            mediaUrl: resolvedMediaUrl,
             duration: parsed.duration,
           };
           setMessages(prev => {
-            if (prev.some(m => m.id === newMessage.id || (m.text === newMessage.text && m.sender === newMessage.sender && m.type === newMessage.type))) {
+            if (
+              prev.some(
+                m =>
+                  (clientMsgId && (m.clientMsgId === clientMsgId || m.id === clientMsgId)) ||
+                  m.id === newMessage.id ||
+                  (m.text === newMessage.text && m.sender === newMessage.sender && m.type === newMessage.type)
+              )
+            ) {
               return prev;
             }
             return [...prev, newMessage];
@@ -2547,14 +2592,16 @@ export const MeetingRoomContent: React.FC<{
     }
 
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const msgId = Math.random().toString(36).substr(2, 9);
-    const senderName = activeParticipant.name || (isHost ? 'Host' : 'You');
+    const msgId = 'msg_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 6);
+    const senderName = activeParticipant.name || currentUserName || (isHost ? 'Host' : 'Participant');
 
     const payload = JSON.stringify({
       type: 'CHAT',
       id: msgId,
+      client_msg_id: msgId,
       sender: senderName,
       text: textToSend,
+      message: textToSend,
       time: timeStr,
       msgType: 'text',
     });
@@ -2562,6 +2609,7 @@ export const MeetingRoomContent: React.FC<{
     // 1. Optimistically display immediately in sender's chat
     const newMessage: ChatMessage = {
       id: msgId,
+      clientMsgId: msgId,
       sender: senderName,
       text: textToSend,
       time: timeStr,
@@ -2575,41 +2623,43 @@ export const MeetingRoomContent: React.FC<{
     // 2. Broadcast to room via data channel
     if (room.state !== ConnectionState.Connected) {
       console.warn('[Chat] Room is not yet connected (state:', room.state, '), message saved locally');
-      return;
-    }
+    } else {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(payload);
 
-    const encoder = new TextEncoder();
-    const data = encoder.encode(payload);
-
-    try {
-      await activeParticipant.publishData(data, { reliable: true } as any);
-    } catch (e) {
-      console.warn('[Chat] Failed to publishData (reliable), resetting promise and trying lossy channel:', e);
       try {
-        if ((room as any)?.engine) {
-          (room as any).engine.publisherConnectionPromise = undefined;
+        await activeParticipant.publishData(data, { reliable: true } as any);
+      } catch (e) {
+        console.warn('[Chat] Failed to publishData (reliable), resetting promise and trying lossy channel:', e);
+        try {
+          if ((room as any)?.engine) {
+            (room as any).engine.publisherConnectionPromise = undefined;
+          }
+          await activeParticipant.publishData(data, { reliable: false } as any);
+        } catch (e2) {
+          if ((room as any)?.engine) {
+            (room as any).engine.publisherConnectionPromise = undefined;
+          }
+          console.warn('[Chat] Notice: message broadcast deferred (channel negotiating):', e2);
         }
-        await activeParticipant.publishData(data, { reliable: false } as any);
-      } catch (e2) {
-        if ((room as any)?.engine) {
-          (room as any).engine.publisherConnectionPromise = undefined;
-        }
-        console.warn('[Chat] Notice: message broadcast deferred (channel negotiating):', e2);
       }
     }
 
-    // 3. Persist to server so future joiners can view previous chat history
+    // 3. Simultaneously post to server for permanent storage so rejoiners and new joiners view history
     const code = meetingCode || roomName;
     if (code) {
       sendMeetingMessage(code, {
         type: 'text',
+        file_type: 'text',
         text: textToSend,
+        message: textToSend,
         sender_name: senderName,
+        client_msg_id: msgId,
       }).catch(err => {
         console.warn('[Chat] Failed to persist chat message to server:', err);
       });
     }
-  }, [chatInput, localParticipant, room, isHost, meetingCode, roomName]);
+  }, [chatInput, localParticipant, room, isHost, currentUserName, meetingCode, roomName]);
 
   const handlePickAndSendAttachment = useCallback(async () => {
     try {
@@ -2656,9 +2706,9 @@ export const MeetingRoomContent: React.FC<{
       const title = fileName;
       const resolvedSize = validation.sizeFormatted || '1.5 MB';
       const defaultDuration = category === 'audio' ? '0:35' : category === 'video' ? '01:20' : undefined;
-      const senderName = activeParticipant.name || (isHost ? 'Host' : 'You');
+      const senderName = activeParticipant.name || currentUserName || (isHost ? 'Host' : 'Participant');
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const msgId = Math.random().toString(36).substr(2, 9);
+      const msgId = 'att_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 6);
 
       let finalMediaUrl: string | undefined = file.uri;
 
@@ -2692,6 +2742,7 @@ export const MeetingRoomContent: React.FC<{
         ...prev,
         {
           id: msgId,
+          clientMsgId: msgId,
           sender: senderName,
           text: title,
           time: timeStr,
@@ -2707,39 +2758,44 @@ export const MeetingRoomContent: React.FC<{
       // 2. Broadcast via data channel to all participants
       if (room.state !== ConnectionState.Connected) {
         console.warn('[MeetingRoomScreen] Room not connected for attachment broadcast, state:', room.state);
-        return;
-      }
+      } else {
+        const payload = JSON.stringify({
+          type: 'CHAT',
+          id: msgId,
+          client_msg_id: msgId,
+          sender: senderName,
+          text: title,
+          message: title,
+          msgType: category,
+          file_type: category,
+          fileName: title,
+          file_name: title,
+          fileSize: resolvedSize,
+          file_size: resolvedSize,
+          mediaUrl: sanitizeMediaUrl(finalMediaUrl),
+          file_url: sanitizeMediaUrl(finalMediaUrl),
+          duration: defaultDuration,
+          time: timeStr,
+        });
 
-      const payload = JSON.stringify({
-        type: 'CHAT',
-        id: msgId,
-        sender: senderName,
-        text: title,
-        msgType: category,
-        fileName: title,
-        fileSize: resolvedSize,
-        mediaUrl: sanitizeMediaUrl(finalMediaUrl),
-        duration: defaultDuration,
-        time: timeStr,
-      });
+        const encoder = new TextEncoder();
+        const data = encoder.encode(payload);
 
-      const encoder = new TextEncoder();
-      const data = encoder.encode(payload);
-
-      try {
-        await activeParticipant.publishData(data, { reliable: true } as any);
-      } catch (e) {
-        console.warn('[MeetingRoomScreen] Error sending attachment reliable, trying lossy:', e);
         try {
-          if ((room as any)?.engine) {
-            (room as any).engine.publisherConnectionPromise = undefined;
+          await activeParticipant.publishData(data, { reliable: true } as any);
+        } catch (e) {
+          console.warn('[MeetingRoomScreen] Error sending attachment reliable, trying lossy:', e);
+          try {
+            if ((room as any)?.engine) {
+              (room as any).engine.publisherConnectionPromise = undefined;
+            }
+            await activeParticipant.publishData(data, { reliable: false } as any);
+          } catch (e2) {
+            if ((room as any)?.engine) {
+              (room as any).engine.publisherConnectionPromise = undefined;
+            }
+            console.warn('[MeetingRoomScreen] Warning broadcasting attachment:', e2);
           }
-          await activeParticipant.publishData(data, { reliable: false } as any);
-        } catch (e2) {
-          if ((room as any)?.engine) {
-            (room as any).engine.publisherConnectionPromise = undefined;
-          }
-          console.warn('[MeetingRoomScreen] Warning broadcasting attachment:', e2);
         }
       }
 
@@ -2748,12 +2804,16 @@ export const MeetingRoomContent: React.FC<{
       if (code) {
         sendMeetingMessage(code, {
           type: category,
+          file_type: category,
           text: title,
+          message: title,
           file_name: title,
           file_size: resolvedSize,
           media_url: finalMediaUrl,
+          file_url: finalMediaUrl,
           duration: defaultDuration,
           sender_name: senderName,
+          client_msg_id: msgId,
         }).catch(err => {
           console.warn('[MeetingRoomScreen] Failed to persist file message to server:', err);
         });
@@ -2761,7 +2821,7 @@ export const MeetingRoomContent: React.FC<{
     } catch (err) {
       console.warn('[MeetingRoomScreen] Error picking/sending attachment:', err);
     }
-  }, [localParticipant, room, isHost, meetingCode, roomName, t]);
+  }, [localParticipant, room, isHost, currentUserName, meetingCode, roomName, t]);
 
   const copyToClipboard = async (text: string) => {
     await Clipboard.setStringAsync(text);

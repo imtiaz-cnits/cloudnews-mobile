@@ -318,22 +318,39 @@ export const uploadMeetingFile = async (
 
 export interface MeetingMessageItem {
   id: number | string;
+  client_msg_id?: string;
   meeting_id?: number;
   meeting_code?: string;
   user_id?: number;
+  sender_id?: number | string;
   sender_name: string;
   type: 'text' | 'image' | 'video' | 'audio' | 'document';
+  file_type?: 'text' | 'image' | 'video' | 'audio' | 'document';
   text?: string;
+  message?: string;
   file_name?: string;
   file_size?: string;
   media_url?: string;
+  file_url?: string;
   duration?: string;
+  timestamp?: string;
   created_at?: string;
   updated_at?: string;
 }
 
+export const normalizeMeetingCode = (code: string): string => {
+  if (!code) return '';
+  const trimmed = code.trim();
+  // If it's a numeric meeting code like "123-456" or "123 456", strip spaces and hyphens
+  if (/^\d[\d\s-]*\d$/.test(trimmed)) {
+    return trimmed.replace(/[\s-]/g, '');
+  }
+  // Otherwise (e.g. room_name "cloudnews-xxx" or alphanumeric), preserve hyphens
+  return trimmed.replace(/\s+/g, '');
+};
+
 export const getMeetingMessages = async (code: string): Promise<ApiResponse<MeetingMessageItem[]>> => {
-  const cleanCode = code.replace(/[\s-]/g, '');
+  const cleanCode = normalizeMeetingCode(code);
   return (await apiClient.get(`/meetings/${cleanCode}/messages`)).data;
 };
 
@@ -341,8 +358,17 @@ export const sendMeetingMessage = async (
   code: string,
   data: Partial<MeetingMessageItem>
 ): Promise<ApiResponse<MeetingMessageItem>> => {
-  const cleanCode = code.replace(/[\s-]/g, '');
-  return (await apiClient.post(`/meetings/${cleanCode}/messages`, data)).data;
+  const cleanCode = normalizeMeetingCode(code);
+  const payload = {
+    ...data,
+    message: data.message || data.text,
+    text: data.text || data.message,
+    file_url: data.file_url || data.media_url,
+    media_url: data.media_url || data.file_url,
+    file_type: data.file_type || data.type,
+    type: data.type || data.file_type,
+  };
+  return (await apiClient.post(`/meetings/${cleanCode}/messages`, payload)).data;
 };
 
 export const removeMeetingParticipant = async (code: string, identity: string): Promise<ApiResponse<any>> => {
