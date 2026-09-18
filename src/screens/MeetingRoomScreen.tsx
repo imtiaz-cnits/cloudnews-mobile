@@ -1236,7 +1236,17 @@ export const MeetingRoomContent: React.FC<{
 
   const [callDuration, setCallDuration] = useState(0);
   const [isMicMuted, setIsMicMuted] = useState(Boolean(muteAudioParam || !hasAudioPermission));
+  const isMicMutedRef = useRef(isMicMuted);
+  useEffect(() => {
+    isMicMutedRef.current = isMicMuted;
+  }, [isMicMuted]);
+
   const [isCameraOff, setIsCameraOff] = useState(Boolean(muteVideoParam || !hasCameraPermission));
+  const isCameraOffRef = useRef(isCameraOff);
+  useEffect(() => {
+    isCameraOffRef.current = isCameraOff;
+  }, [isCameraOff]);
+
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isScreenShareToggling, setIsScreenShareToggling] = useState(false);
   const isScreenShareTogglingRef = useRef(false);
@@ -1533,7 +1543,11 @@ export const MeetingRoomContent: React.FC<{
     if (!localParticipant) return;
     setIsScreenSharing(Boolean(localParticipant.isScreenShareEnabled));
 
-    const syncScreenShare = () => {
+    const syncScreenShare = (pub?: any) => {
+      // Filter out non-screen-share publications (mic, camera) so they don't interfere
+      if (pub && pub.source && pub.source !== Track.Source.ScreenShare) {
+        return;
+      }
       const enabled = Boolean(localParticipant.isScreenShareEnabled);
       setIsScreenSharing(enabled);
       if (!enabled) {
@@ -1541,26 +1555,73 @@ export const MeetingRoomContent: React.FC<{
         prepareScreenShare(false);
         setPipConfig(true, false);
         releaseScreenShareWakeLock();
-        if (!isMicMuted && !localParticipant.isMicrophoneEnabled) {
-          localParticipant.setMicrophoneEnabled(true).catch(() => {});
-        }
       }
     };
 
-    localParticipant.on(ParticipantEvent.TrackPublished, syncScreenShare);
-    localParticipant.on(ParticipantEvent.TrackUnpublished, syncScreenShare);
-    localParticipant.on(ParticipantEvent.TrackMuted, syncScreenShare);
-    localParticipant.on(ParticipantEvent.TrackUnmuted, syncScreenShare);
+    localParticipant.on(ParticipantEvent.LocalTrackPublished, syncScreenShare);
     localParticipant.on(ParticipantEvent.LocalTrackUnpublished, syncScreenShare);
 
     return () => {
-      localParticipant.off(ParticipantEvent.TrackPublished, syncScreenShare);
-      localParticipant.off(ParticipantEvent.TrackUnpublished, syncScreenShare);
-      localParticipant.off(ParticipantEvent.TrackMuted, syncScreenShare);
-      localParticipant.off(ParticipantEvent.TrackUnmuted, syncScreenShare);
+      localParticipant.off(ParticipantEvent.LocalTrackPublished, syncScreenShare);
       localParticipant.off(ParticipantEvent.LocalTrackUnpublished, syncScreenShare);
     };
-  }, [localParticipant, isMicMuted]);
+  }, [localParticipant]);
+
+  // Synchronize local microphone track state bidirectionally with localParticipant
+  useEffect(() => {
+    if (!localParticipant) return;
+
+    if (localParticipant.isMicrophoneEnabled !== undefined) {
+      setIsMicMuted(!localParticipant.isMicrophoneEnabled);
+    }
+
+    const syncMic = (pub?: any) => {
+      if (pub && pub.source && pub.source !== Track.Source.Microphone) {
+        return;
+      }
+      setIsMicMuted(!localParticipant.isMicrophoneEnabled);
+    };
+
+    localParticipant.on(ParticipantEvent.TrackMuted, syncMic);
+    localParticipant.on(ParticipantEvent.TrackUnmuted, syncMic);
+    localParticipant.on(ParticipantEvent.LocalTrackPublished, syncMic);
+    localParticipant.on(ParticipantEvent.LocalTrackUnpublished, syncMic);
+
+    return () => {
+      localParticipant.off(ParticipantEvent.TrackMuted, syncMic);
+      localParticipant.off(ParticipantEvent.TrackUnmuted, syncMic);
+      localParticipant.off(ParticipantEvent.LocalTrackPublished, syncMic);
+      localParticipant.off(ParticipantEvent.LocalTrackUnpublished, syncMic);
+    };
+  }, [localParticipant]);
+
+  // Synchronize local camera track state bidirectionally with localParticipant
+  useEffect(() => {
+    if (!localParticipant) return;
+
+    if (localParticipant.isCameraEnabled !== undefined) {
+      setIsCameraOff(!localParticipant.isCameraEnabled);
+    }
+
+    const syncCamera = (pub?: any) => {
+      if (pub && pub.source && pub.source !== Track.Source.Camera) {
+        return;
+      }
+      setIsCameraOff(!localParticipant.isCameraEnabled);
+    };
+
+    localParticipant.on(ParticipantEvent.TrackMuted, syncCamera);
+    localParticipant.on(ParticipantEvent.TrackUnmuted, syncCamera);
+    localParticipant.on(ParticipantEvent.LocalTrackPublished, syncCamera);
+    localParticipant.on(ParticipantEvent.LocalTrackUnpublished, syncCamera);
+
+    return () => {
+      localParticipant.off(ParticipantEvent.TrackMuted, syncCamera);
+      localParticipant.off(ParticipantEvent.TrackUnmuted, syncCamera);
+      localParticipant.off(ParticipantEvent.LocalTrackPublished, syncCamera);
+      localParticipant.off(ParticipantEvent.LocalTrackUnpublished, syncCamera);
+    };
+  }, [localParticipant]);
 
   // Synchronize initial mic and camera track states based on user pre-call choices
   useEffect(() => {
@@ -1584,7 +1645,7 @@ export const MeetingRoomContent: React.FC<{
           meetingTitle || roomName || 'CloudNews Meeting',
           '通话中 · 麦克风与音频已保持开启 / Meeting active · Mic & audio running'
         );
-        if (localParticipant && !isMicMuted && !localParticipant.isMicrophoneEnabled) {
+        if (localParticipant && !isMicMutedRef.current && !localParticipant.isMicrophoneEnabled) {
           console.log('[AppState] Ensuring microphone track is preserved in background');
           localParticipant.setMicrophoneEnabled(true).catch(err => {
             console.warn('[AppState] Background microphone preserve warning:', err);
@@ -1592,7 +1653,7 @@ export const MeetingRoomContent: React.FC<{
         }
       } else if (nextAppState === 'active') {
         // Returned to foreground, re-verify audio output and mic state without redundant renegotiation
-        if (localParticipant && !isMicMuted && !localParticipant.isMicrophoneEnabled) {
+        if (localParticipant && !isMicMutedRef.current && !localParticipant.isMicrophoneEnabled) {
           localParticipant.setMicrophoneEnabled(true).catch(() => {});
         }
       }
@@ -1602,7 +1663,7 @@ export const MeetingRoomContent: React.FC<{
     return () => {
       subscription.remove();
     };
-  }, [localParticipant, isMicMuted, meetingTitle, roomName]);
+  }, [localParticipant, meetingTitle, roomName]);
 
   const allParticipants = useMemo(() => {
     const map = new Map<string, Participant>();
@@ -2729,20 +2790,55 @@ export const MeetingRoomContent: React.FC<{
   }, []);
 
   const handleToggleMic = async () => {
-    if (localParticipant) {
-      const nextMuted = !isMicMuted;
-      if (!isInWaitingRoom) {
-        await localParticipant.setMicrophoneEnabled(!nextMuted);
+    if (!localParticipant) {
+      console.warn('[MeetingRoom] localParticipant is null, cannot toggle mic');
+      return;
+    }
+    // If currently muted (isMicMuted is true), we want to unmute (nextEnabled = true)
+    const nextEnabled = isMicMuted;
+    try {
+      if (nextEnabled && Platform.OS === 'android') {
+        const audioGranted = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+        if (!audioGranted) {
+          const res = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+          if (res !== PermissionsAndroid.RESULTS.GRANTED) {
+            Alert.alert('Permission Denied', 'Microphone permission is required to speak.');
+            return;
+          }
+        }
       }
-      setIsMicMuted(nextMuted);
+      if (!isInWaitingRoom) {
+        await localParticipant.setMicrophoneEnabled(nextEnabled);
+      }
+      setIsMicMuted(!nextEnabled);
+    } catch (err) {
+      console.error('[MeetingRoom] Toggle mic failed:', err);
+      setIsMicMuted(!localParticipant.isMicrophoneEnabled);
     }
   };
 
   const handleToggleCamera = async () => {
-    if (localParticipant) {
-      const nextOff = !isCameraOff;
-      await localParticipant.setCameraEnabled(!nextOff);
-      setIsCameraOff(nextOff);
+    if (!localParticipant) {
+      console.warn('[MeetingRoom] localParticipant is null, cannot toggle camera');
+      return;
+    }
+    const nextEnabled = isCameraOff;
+    try {
+      if (nextEnabled && Platform.OS === 'android') {
+        const cameraGranted = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA);
+        if (!cameraGranted) {
+          const res = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA);
+          if (res !== PermissionsAndroid.RESULTS.GRANTED) {
+            Alert.alert('Permission Denied', 'Camera permission is required for video.');
+            return;
+          }
+        }
+      }
+      await localParticipant.setCameraEnabled(nextEnabled);
+      setIsCameraOff(!nextEnabled);
+    } catch (err) {
+      console.error('[MeetingRoom] Toggle camera failed:', err);
+      setIsCameraOff(!localParticipant.isCameraEnabled);
     }
   };
 
@@ -2815,7 +2911,7 @@ export const MeetingRoomContent: React.FC<{
         await new Promise(resolve => setTimeout(resolve, 350));
 
         // Guarantee that local microphone track is NOT disposed or unpublished, and coexists with screen share
-        if (micShouldBeActive && !localParticipant.isMicrophoneEnabled) {
+        if (micShouldBeActive && !isMicMutedRef.current && !localParticipant.isMicrophoneEnabled) {
           console.log('[ScreenShare] Preserving active microphone track coexisting with screen share');
           try {
             await localParticipant.setMicrophoneEnabled(true);
@@ -2836,7 +2932,7 @@ export const MeetingRoomContent: React.FC<{
         // Small delay before verifying microphone track state after stopping screen share
         await new Promise(resolve => setTimeout(resolve, 200));
 
-        if (!isMicMuted && !localParticipant.isMicrophoneEnabled) {
+        if (!isMicMutedRef.current && !localParticipant.isMicrophoneEnabled) {
           try {
             await localParticipant.setMicrophoneEnabled(true);
           } catch (micErr) {
@@ -2890,7 +2986,7 @@ export const MeetingRoomContent: React.FC<{
       });
       setIsScreenSharing(false);
       releaseScreenShareWakeLock();
-      if (!isMicMuted) {
+      if (!isMicMutedRef.current) {
         localParticipant.setMicrophoneEnabled(true).catch(() => {});
       }
       Alert.alert(
