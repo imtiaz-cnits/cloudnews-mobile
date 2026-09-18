@@ -108,7 +108,7 @@ const styles = StyleSheet.create({
   fallbackName: {
     color: Colors.text.secondary,
     fontSize: 14,
-    fontWeight: '500',
+    fontFamily: 'PlusJakartaSans-Medium',
   },
   badgeOverlay: {
     position: 'absolute',
@@ -129,7 +129,7 @@ const styles = StyleSheet.create({
   nameText: {
     color: Colors.text.primary,
     fontSize: 12,
-    fontWeight: '500',
+    fontFamily: 'PlusJakartaSans-Medium',
   },
   muteBadge: {
     backgroundColor: Colors.controlOverlay,

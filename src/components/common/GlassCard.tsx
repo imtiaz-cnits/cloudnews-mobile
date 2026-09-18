@@ -2,6 +2,7 @@ import React from 'react';
 import { StyleSheet, View, ViewProps, ViewStyle } from 'react-native';
 import { Colors } from '../../constants/colors';
 import { BorderRadius, Spacing } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 
 interface GlassCardProps extends ViewProps {
   children: React.ReactNode;
@@ -15,10 +16,16 @@ export const GlassCard: React.FC<GlassCardProps> = ({
   variant = 'dark',
   ...rest
 }) => {
+  const { isDark, colors } = useTheme();
+
   return (
     <View
       style={[
         styles.card,
+        !isDark && {
+          backgroundColor: colors.card,
+          borderColor: colors.border,
+        },
         variant === 'bordered' && styles.bordered,
         variant === 'light' && styles.light,
         style,

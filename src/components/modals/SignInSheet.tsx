@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Colors } from '../../constants/colors';
 import { BorderRadius, Spacing, Typography } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 import CustomInput from '../common/CustomInput';
 import GlassCard from '../common/GlassCard';
 import GradientButton from '../common/GradientButton';
@@ -33,6 +34,7 @@ export const SignInSheet: React.FC<SignInSheetProps> = ({
   const [displayName, setDisplayName] = useState('');
   const [roomCode, setRoomCode] = useState(initialRoomCode);
   const [error, setError] = useState('');
+  const { isDark, colors } = useTheme();
 
   const handleSubmit = () => {
     if (!displayName.trim()) {
@@ -52,20 +54,23 @@ export const SignInSheet: React.FC<SignInSheetProps> = ({
     >
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.backdrop}
+        style={[
+          styles.backdrop,
+          !isDark && { backgroundColor: 'rgba(15, 23, 42, 0.4)' },
+        ]}
       >
         <TouchableOpacity
           style={styles.dismissOverlay}
           activeOpacity={1}
           onPress={onClose}
         />
-        <GlassCard style={styles.sheetContainer} variant="dark">
+        <GlassCard style={styles.sheetContainer} variant={isDark ? "dark" : "light"}>
           <View style={styles.header}>
-            <Text style={Typography.headingSmall}>
+            <Text style={[Typography.headingSmall, !isDark && { color: colors.text }]}>
               {mode === 'join' ? 'Join Conference' : 'User Profile'}
             </Text>
             <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <X color={Colors.text.muted} size={22} />
+              <X color={isDark ? Colors.text.muted : colors.textMuted} size={22} />
             </TouchableOpacity>
           </View>
 

@@ -54,7 +54,10 @@ export const GradientButton: React.FC<GradientButtonProps> = ({
         ) : (
           <>
             {icon}
-            <Text style={[styles.text, icon ? styles.textWithIcon : null]}>
+            <Text
+              style={[styles.text, icon ? styles.textWithIcon : null]}
+              numberOfLines={1}
+            >
               {title}
             </Text>
           </>
@@ -66,24 +69,23 @@ export const GradientButton: React.FC<GradientButtonProps> = ({
 
 const styles = StyleSheet.create({
   touchable: {
-    borderRadius: BorderRadius.md,
+    borderRadius: 14,
     overflow: 'hidden',
   },
   gradient: {
-    paddingVertical: Spacing.md - 2,
-    paddingHorizontal: Spacing.lg,
+    flex: 1, // Ensure gradient fills the touchable height
+    paddingHorizontal: 20,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
-    borderRadius: BorderRadius.md,
   },
   text: {
-    color: Colors.text.primary,
+    color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '600',
+    fontFamily: 'PlusJakartaSans-Bold', // Font explicitly added here
   },
   textWithIcon: {
-    marginLeft: Spacing.sm,
+    marginLeft: 10,
   },
 });
 

@@ -1,146 +1,61 @@
 import { useCallback, useEffect, useState } from 'react';
-import { createMeetingRoom, getMeetingJoinToken } from '../services/api';
+import { createMeeting, guestLogin, joinMeetingRoom } from '../services/api';
 import { initLiveKit, startAudioSession, stopAudioSession } from '../services/livekit';
-
-export interface MeetingSessionConfig {
-  roomName: string;
-  displayName: string;
-  identity?: string;
-}
-
-export interface MeetingState {
-  isConnecting: boolean;
-  isConnected: boolean;
-  token: string | null;
-  serverUrl: string | null;
-  roomName: string | null;
-  error: string | null;
-  isMicMuted: boolean;
-  isCameraOff: boolean;
-}
+import storage, { StorageKeys } from '../services/storage';
 
 export function useMeeting() {
-  const [state, setState] = useState<MeetingState>({
+  const [state, setState] = useState({
     isConnecting: false,
     isConnected: false,
-    token: null,
-    serverUrl: null,
-    roomName: null,
-    error: null,
-    isMicMuted: false,
-    isCameraOff: false,
+    token: null as string | null,
+    serverUrl: null as string | null,
+    roomName: null as string | null,
+    error: null as string | null,
   });
 
   useEffect(() => {
     initLiveKit();
   }, []);
 
-  /**
-   * Join or start a meeting by room name & participant name
-   */
-  const joinMeeting = useCallback(async (config: MeetingSessionConfig) => {
-    setState(prev => ({
-      ...prev,
-      isConnecting: true,
-      error: null,
-      roomName: config.roomName,
-    }));
-
+  const startNewMeeting = useCallback(async (
+    title = 'Instant Meeting',
+    options?: { meetingCode?: string; passcode?: string; maxParticipants?: number }
+  ) => {
+    setState(prev => ({ ...prev, isConnecting: true, error: null }));
     try {
-      // 1. Fetch join token from Laravel API backend
-      const response = await getMeetingJoinToken(
-        config.roomName,
-        config.identity,
-        config.displayName,
-      );
+      // 1. Authenticate as Guest first (Sanctum requirement) only if not authenticated
+      const token = await storage.getItem(StorageKeys.AUTH_TOKEN);
+      if (!token) {
+        await guestLogin('Mobile User');
+      }
+
+      // 2. Create Meeting
+      const response = await createMeeting(title, options);
 
       await startAudioSession();
 
-      setState(prev => ({
-        ...prev,
+      setState({
         isConnecting: false,
         isConnected: true,
-        token: response.data.token,
-        serverUrl: response.data.livekit_url,
-        roomName: response.data.room_name,
+        token: response.data.livekit_token || response.data.token || null,
+        serverUrl: response.data.livekit_url || null,
+        roomName: response.data.room_name || response.data.meeting?.room_name || '',
         error: null,
-      }));
+      });
 
       return response.data;
     } catch (err: any) {
-      const errorMsg =
-        err?.response?.data?.message || err?.message || 'Failed to join meeting';
-      setState(prev => ({
-        ...prev,
-        isConnecting: false,
-        isConnected: false,
-        error: errorMsg,
-      }));
-      throw new Error(errorMsg);
+      console.error('API Error:', err?.response?.data || err.message);
+      const msg = err?.response?.data?.message || err.message;
+      setState(prev => ({ ...prev, isConnecting: false, error: msg }));
+      throw new Error(msg);
     }
-  }, []);
-
-  /**
-   * Create a new room on the backend
-   */
-  const createRoom = useCallback(async (roomName?: string) => {
-    setState(prev => ({ ...prev, isConnecting: true, error: null }));
-    try {
-      const response = await createMeetingRoom(roomName);
-      setState(prev => ({ ...prev, isConnecting: false }));
-      return response.data.room_name;
-    } catch (err: any) {
-      const errorMsg =
-        err?.response?.data?.message || err?.message || 'Failed to create room';
-      setState(prev => ({
-        ...prev,
-        isConnecting: false,
-        error: errorMsg,
-      }));
-      throw new Error(errorMsg);
-    }
-  }, []);
-
-  /**
-   * Toggle local microphone state
-   */
-  const toggleMic = useCallback(() => {
-    setState(prev => ({ ...prev, isMicMuted: !prev.isMicMuted }));
-  }, []);
-
-  /**
-   * Toggle local camera state
-   */
-  const toggleCamera = useCallback(() => {
-    setState(prev => ({ ...prev, isCameraOff: !prev.isCameraOff }));
-  }, []);
-
-  /**
-   * Leave meeting and tear down audio session
-   */
-  const leaveMeeting = useCallback(async () => {
-    await stopAudioSession();
-    setState({
-      isConnecting: false,
-      isConnected: false,
-      token: null,
-      serverUrl: null,
-      roomName: null,
-      error: null,
-      isMicMuted: false,
-      isCameraOff: false,
-    });
   }, []);
 
   return {
     ...state,
-    joinMeeting,
-    createRoom,
-    toggleMic,
-    toggleCamera,
-    leaveMeeting,
+    startNewMeeting,
   };
 }
 
 export default useMeeting;
-

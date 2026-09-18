@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { Colors } from '../../constants/colors';
 import { BorderRadius, Spacing } from '../../constants/theme';
+import { useTheme } from '../../context/ThemeContext';
 
 interface CustomInputProps extends TextInputProps {
   label?: string;
@@ -28,21 +29,23 @@ export const CustomInput: React.FC<CustomInputProps> = ({
   ...rest
 }) => {
   const [isFocused, setIsFocused] = useState(false);
+  const { isDark, colors } = useTheme();
 
   return (
     <View style={[styles.container, containerStyle]}>
-      {label && <Text style={styles.label}>{label}</Text>}
+      {label && <Text style={[styles.label, !isDark && { color: colors.textSecondary }]}>{label}</Text>}
       <View
         style={[
           styles.inputContainer,
+          !isDark && { backgroundColor: colors.card, borderColor: colors.border },
           isFocused && styles.focusedInput,
           Boolean(error) && styles.errorInput,
         ]}
       >
         {leftIcon && <View style={styles.iconContainer}>{leftIcon}</View>}
         <TextInput
-          style={[styles.input, style]}
-          placeholderTextColor={Colors.text.muted}
+          style={[styles.input, !isDark && { color: colors.text }, style]}
+          placeholderTextColor={isDark ? Colors.text.muted : colors.textMuted}
           onFocus={e => {
             setIsFocused(true);
             onFocus?.(e);
@@ -67,7 +70,7 @@ const styles = StyleSheet.create({
     color: Colors.text.secondary,
     fontSize: 14,
     marginBottom: Spacing.xs,
-    fontWeight: '500',
+    fontFamily: 'PlusJakartaSans-Medium',
   },
   inputContainer: {
     flexDirection: 'row',
@@ -91,11 +94,13 @@ const styles = StyleSheet.create({
     flex: 1,
     color: Colors.text.primary,
     fontSize: 15,
+    fontFamily: 'PlusJakartaSans-Medium',
     paddingVertical: Spacing.md - 2,
   },
   errorText: {
     color: Colors.status.danger,
     fontSize: 12,
+    fontFamily: 'PlusJakartaSans-Medium',
     marginTop: Spacing.xs,
   },
 });

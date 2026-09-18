@@ -17,38 +17,49 @@ export const BorderRadius = {
   full: 9999,
 };
 
+export const Fonts = {
+  regular: 'PlusJakartaSans-Regular',
+  medium: 'PlusJakartaSans-Medium',
+  semiBold: 'PlusJakartaSans-SemiBold',
+  bold: 'PlusJakartaSans-Bold',
+  extraBold: 'PlusJakartaSans-ExtraBold',
+  light: 'PlusJakartaSans-Light',
+  italic: 'PlusJakartaSans-Italic',
+  boldItalic: 'PlusJakartaSans-BoldItalic',
+};
+
 export const Typography = {
   headingLarge: {
     fontSize: 28,
-    fontWeight: '700' as const,
+    fontFamily: Fonts.bold,
     color: Colors.text.primary,
     letterSpacing: -0.5,
   },
   headingMedium: {
     fontSize: 22,
-    fontWeight: '600' as const,
+    fontFamily: Fonts.semiBold,
     color: Colors.text.primary,
   },
   headingSmall: {
     fontSize: 18,
-    fontWeight: '600' as const,
+    fontFamily: Fonts.semiBold,
     color: Colors.text.primary,
   },
   bodyLarge: {
     fontSize: 16,
-    fontWeight: '400' as const,
+    fontFamily: Fonts.regular,
     color: Colors.text.primary,
     lineHeight: 24,
   },
   bodyMedium: {
     fontSize: 14,
-    fontWeight: '400' as const,
+    fontFamily: Fonts.regular,
     color: Colors.text.secondary,
     lineHeight: 20,
   },
   caption: {
     fontSize: 12,
-    fontWeight: '400' as const,
+    fontFamily: Fonts.medium,
     color: Colors.text.muted,
   },
 };
