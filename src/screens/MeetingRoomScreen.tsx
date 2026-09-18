@@ -1983,9 +1983,10 @@ export const MeetingRoomContent: React.FC<{
     return false;
   }, [isHost, allParticipants, localParticipant, hostPresenceData]);
 
-  // Guest admission state: guests start in waiting room until host admits them
-  const [isAdmitted, setIsAdmitted] = useState(!isGuest);
-  const isInWaitingRoom = Boolean(isGuest && !isAdmitted);
+  // Guest admission state: With Host-First Token Gating, guests who receive a token enter directly!
+  // Eliminates manual "Admit" waiting room roadblock so guests seamlessly enter upon join.
+  const [isAdmitted, setIsAdmitted] = useState(true);
+  const isInWaitingRoom = false;
 
   // Host admission control actions
   const handleAdmitGuest = useCallback((guestIdentity: string) => {
