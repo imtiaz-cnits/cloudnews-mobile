@@ -397,6 +397,42 @@ const ScreenShareView: React.FC<{
     (track?.participant?.isLocal || (localParticipant && track?.participant?.identity === localParticipant?.identity))
   );
 
+  const presenter = track?.participant;
+  const cameraTracks = useTracks([Track.Source.Camera], { onlySubscribed: false });
+  const presenterCameraTrack = cameraTracks.find(
+    t => t.participant?.identity === presenter?.identity && t.source === Track.Source.Camera
+  );
+
+  const [isSpeaking, setIsSpeaking] = useState(presenter?.isSpeaking ?? false);
+  const [isMicEnabled, setIsMicEnabled] = useState(presenter?.isMicrophoneEnabled ?? false);
+  const [isCameraEnabled, setIsCameraEnabled] = useState(presenter?.isCameraEnabled ?? false);
+  const [isPresenterTileCollapsed, setIsPresenterTileCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (!presenter) return;
+    const onUpdate = () => {
+      setIsSpeaking(presenter.isSpeaking);
+      setIsMicEnabled(presenter.isMicrophoneEnabled);
+      setIsCameraEnabled(presenter.isCameraEnabled);
+    };
+    presenter.on('isSpeakingChanged', onUpdate);
+    presenter.on('trackMuted', onUpdate);
+    presenter.on('trackUnmuted', onUpdate);
+    presenter.on('trackPublished', onUpdate);
+    presenter.on('trackUnpublished', onUpdate);
+
+    return () => {
+      presenter.off('isSpeakingChanged', onUpdate);
+      presenter.off('trackMuted', onUpdate);
+      presenter.off('trackUnmuted', onUpdate);
+      presenter.off('trackPublished', onUpdate);
+      presenter.off('trackUnpublished', onUpdate);
+    };
+  }, [presenter]);
+
+  const presenterName = presenter?.name || presenter?.identity || 'Participant';
+  const isPresenterHost = checkIsParticipantHost(presenter);
+
   return (
     <View style={styles.fullScreenCard}>
       {isSelf ? (
@@ -476,6 +512,87 @@ const ScreenShareView: React.FC<{
             onPress={onPress}
             style={[StyleSheet.absoluteFill, { zIndex: 2 }]}
           />
+
+          {/* Floating Presenter Participant Card Overlay on the Screen Share */}
+          {presenter && (
+            <Animated.View
+              style={[
+                styles.floatingPresenterCard,
+                {
+                  bottom: (insets?.bottom ?? 0) + (showControls ? 86 : 24),
+                  borderColor: isSpeaking ? '#10b981' : 'rgba(255, 255, 255, 0.25)',
+                },
+                isPresenterTileCollapsed && styles.floatingPresenterCardCollapsed,
+              ]}
+            >
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => setIsPresenterTileCollapsed(prev => !prev)}
+                style={styles.floatingPresenterTouchable}
+              >
+                {isPresenterTileCollapsed ? (
+                  <View style={styles.floatingPresenterCollapsedContent}>
+                    <View style={[styles.miniAvatar, isSpeaking && styles.miniAvatarSpeaking]}>
+                      <Text style={styles.miniAvatarText}>
+                        {getInitials(presenterName)}
+                      </Text>
+                    </View>
+                    <Text style={styles.floatingPresenterCollapsedName} numberOfLines={1}>
+                      {presenterName}
+                    </Text>
+                    {isMicEnabled ? (
+                      <Mic color="#10b981" size={12} />
+                    ) : (
+                      <MicOff color="#ef4444" size={12} />
+                    )}
+                  </View>
+                ) : (
+                  <>
+                    <View style={styles.floatingPresenterMediaBox}>
+                      {isCameraEnabled && presenterCameraTrack?.publication?.track ? (
+                        <VideoTrack
+                          trackRef={presenterCameraTrack}
+                          style={styles.floatingPresenterVideo}
+                          objectFit="cover"
+                        />
+                      ) : (
+                        <View style={styles.floatingPresenterAvatarBox}>
+                          <View style={[styles.floatingPresenterAvatarCircle, isSpeaking && styles.avatarCircleSpeaking]}>
+                            <Text style={styles.floatingPresenterAvatarText}>
+                              {getInitials(presenterName)}
+                            </Text>
+                          </View>
+                        </View>
+                      )}
+
+                      {/* Presenter Role Badge */}
+                      <View style={[styles.floatingPresenterRoleBadge, isPresenterHost && styles.floatingPresenterHostBadge]}>
+                        <Text style={styles.floatingPresenterRoleText}>
+                          {isPresenterHost ? 'HOST' : 'GUEST'}
+                        </Text>
+                      </View>
+
+                      {/* Presenter Mic Status Badge */}
+                      <View style={styles.floatingPresenterMicBadge}>
+                        {isMicEnabled ? (
+                          <Mic color="#10b981" size={11} />
+                        ) : (
+                          <MicOff color="#ef4444" size={11} />
+                        )}
+                      </View>
+                    </View>
+
+                    {/* Presenter Name Banner */}
+                    <View style={styles.floatingPresenterNameBanner}>
+                      <Text style={styles.floatingPresenterNameText} numberOfLines={1}>
+                        {presenterName}
+                      </Text>
+                    </View>
+                  </>
+                )}
+              </TouchableOpacity>
+            </Animated.View>
+          )}
         </>
       )}
 
@@ -1185,6 +1302,15 @@ export const MeetingRoomContent: React.FC<{
   const isScreenShareActive = useMemo(() => {
     return Boolean(isScreenSharing || activeScreenShare);
   }, [isScreenSharing, activeScreenShare]);
+
+  // Automatically switch layout to full screen when host or guest screen shares
+  useEffect(() => {
+    if (activeScreenShare) {
+      console.log('[MeetingRoomScreen] Screen share started by', activeScreenShare.participant?.identity, '- automatically expanding to full screen');
+      setIsGridMode(false);
+      setPinnedParticipantIdentity(null);
+    }
+  }, [activeScreenShare]);
 
   // Synchronize Picture-in-Picture configuration with Android OS:
   // When in meeting and screen share is OFF -> PiP enabled (auto-enter on minimize / swipe home).
@@ -2582,7 +2708,7 @@ export const MeetingRoomContent: React.FC<{
               (localParticipant && activeScreenShare.participant?.identity === localParticipant.identity)
             )}
           />
-        ) : !isGridMode && (activeMeetingParticipants.length === 1 || !pinnedParticipantIdentity) ? (
+        ) : !isGridMode && activeMeetingParticipants.length === 1 ? (
           <ParticipantCard
             key={`solo-${activeMeetingParticipants[0]?.identity || 'local'}`}
             participant={activeMeetingParticipants[0] || (localParticipant as any)}
@@ -2603,7 +2729,7 @@ export const MeetingRoomContent: React.FC<{
             onPress={handleScreenTap}
             style={styles.fullScreenCard}
           />
-        ) : pinnedParticipantIdentity && activeMeetingParticipants.find(p => p.identity === pinnedParticipantIdentity) && !isGridMode ? (
+        ) : !isGridMode && pinnedParticipantIdentity && activeMeetingParticipants.find(p => p.identity === pinnedParticipantIdentity) ? (
           <ParticipantCard
             key={`pinned-${pinnedParticipantIdentity}`}
             participant={activeMeetingParticipants.find(p => p.identity === pinnedParticipantIdentity)!}
@@ -2630,6 +2756,21 @@ export const MeetingRoomContent: React.FC<{
             style={styles.grid}
             onPress={handleScreenTap}
           >
+            {activeScreenShare && (
+              <TouchableOpacity
+                activeOpacity={0.9}
+                style={[styles.participantCard, styles.gridScreenShareCard]}
+                onPress={() => setIsGridMode(false)}
+              >
+                <VideoTrack trackRef={activeScreenShare as any} style={styles.cardVideo} objectFit="contain" />
+                <View style={styles.gridScreenShareBadge}>
+                  <MonitorUp color="#00A8FF" size={14} />
+                  <Text style={styles.gridScreenShareText}>
+                    {activeScreenShare.participant?.name || 'Screen Share'} (Tap for Full Screen)
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
             {activeMeetingParticipants.map((p) => (
               <ParticipantCard
                 key={`participant-${p.identity}`}
@@ -2643,7 +2784,7 @@ export const MeetingRoomContent: React.FC<{
                 insets={insets}
                 onSwitchCamera={handleSwitchCamera}
                 onPress={() => handleParticipantPress(p.identity)}
-                style={activeMeetingParticipants.length === 1 && { width: SCREEN_WIDTH - 24, height: '72%', alignSelf: 'center' }}
+                style={activeMeetingParticipants.length === 1 && !activeScreenShare && { width: SCREEN_WIDTH - 24, height: '72%', alignSelf: 'center' }}
               />
             ))}
           </TouchableOpacity>
@@ -3596,6 +3737,166 @@ const styles = StyleSheet.create({
   fullScreenCard: { width: '100%', height: '100%', borderRadius: 0, borderWidth: 0, backgroundColor: '#050B14', overflow: 'hidden' },
   activeSpeakerCard: { borderColor: '#10b981', borderWidth: 2 },
   cardVideo: { width: '100%', height: '100%' },
+  // Floating Presenter Card on Screen Share
+  floatingPresenterCard: {
+    position: 'absolute',
+    right: 16,
+    width: 110,
+    height: 145,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(11, 23, 40, 0.92)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    zIndex: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  floatingPresenterCardCollapsed: {
+    width: 'auto',
+    height: 36,
+    paddingHorizontal: 12,
+    borderRadius: 18,
+  },
+  floatingPresenterTouchable: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
+  floatingPresenterMediaBox: {
+    flex: 1,
+    width: '100%',
+    position: 'relative',
+    backgroundColor: '#050B14',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  floatingPresenterVideo: {
+    width: '100%',
+    height: '100%',
+  },
+  floatingPresenterAvatarBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  floatingPresenterAvatarCircle: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(0, 168, 255, 0.2)',
+    borderWidth: 1,
+    borderColor: '#00A8FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarCircleSpeaking: {
+    borderColor: '#10b981',
+    borderWidth: 2,
+  },
+  floatingPresenterAvatarText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontFamily: 'PlusJakartaSans-Bold',
+  },
+  floatingPresenterRoleBadge: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  floatingPresenterHostBadge: {
+    backgroundColor: 'rgba(0, 168, 255, 0.85)',
+  },
+  floatingPresenterRoleText: {
+    color: '#FFF',
+    fontSize: 8,
+    fontFamily: 'PlusJakartaSans-Bold',
+    letterSpacing: 0.5,
+  },
+  floatingPresenterMicBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: 'rgba(5, 11, 20, 0.8)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  floatingPresenterNameBanner: {
+    width: '100%',
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    backgroundColor: 'rgba(5, 11, 20, 0.85)',
+    alignItems: 'center',
+  },
+  floatingPresenterNameText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontFamily: 'PlusJakartaSans-SemiBold',
+  },
+  floatingPresenterCollapsedContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  floatingPresenterCollapsedName: {
+    color: '#FFF',
+    fontSize: 11,
+    fontFamily: 'PlusJakartaSans-SemiBold',
+    maxWidth: 100,
+  },
+  miniAvatar: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#00A8FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  miniAvatarSpeaking: {
+    backgroundColor: '#10b981',
+  },
+  miniAvatarText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontFamily: 'PlusJakartaSans-Bold',
+  },
+  gridScreenShareCard: {
+    width: '100%',
+    height: 200,
+    marginBottom: 8,
+    borderColor: '#00A8FF',
+    borderWidth: 1.5,
+  },
+  gridScreenShareBadge: {
+    position: 'absolute',
+    bottom: 8,
+    left: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(5, 11, 20, 0.85)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 168, 255, 0.4)',
+  },
+  gridScreenShareText: {
+    color: '#FFF',
+    fontSize: 11,
+    fontFamily: 'PlusJakartaSans-SemiBold',
+  },
   cardOverlay: { ...StyleSheet.absoluteFillObject, paddingHorizontal: 14, justifyContent: 'space-between' },
   cardTopRow: {
     position: 'absolute',
