@@ -173,13 +173,14 @@ interface ChatMessage {
 const checkIsParticipantHost = (p?: Participant | null): boolean => {
   if (!p) return false;
   if (p.metadata === 'host') return true;
-  if (p.identity && p.identity.toLowerCase().includes('host')) return true;
-  if (p.name && p.name.toLowerCase().includes('host')) return true;
   if (p.metadata) {
     try {
       const meta = JSON.parse(p.metadata);
-      if (meta.is_host || meta.role === 'host' || meta.type === 'host' || meta.roomAdmin) {
+      if (meta.is_host === true || meta.role === 'host' || meta.type === 'host' || meta.roomAdmin === true) {
         return true;
+      }
+      if (meta.is_host === false) {
+        return false;
       }
     } catch {}
   }
@@ -1465,13 +1466,12 @@ export const MeetingRoomContent: React.FC<{
     };
   }, [latestWaitingGuest]);
 
-  // Determine if local user is host (guests are NEVER host; solo presence does not make one host)
+  // Determine if local user is host of this meeting room (guests are NEVER host)
   const isHost = Boolean(
     !isGuest && (
       isHostParam ||
       checkIsParticipantHost(localParticipant) ||
-      localParticipant?.metadata === 'host' ||
-      localParticipant?.identity?.toLowerCase().includes('host')
+      localParticipant?.metadata === 'host'
     )
   );
 
@@ -2655,7 +2655,7 @@ export const MeetingRoomContent: React.FC<{
 
     setInvitedUsernames(prev => new Set([...prev, clean]));
 
-    const inviteText = `Join my Cloud News Meet:\nTitle: ${meetingTitle || displayCode}\nCode: ${displayCode}\nLink: ${meetingLink}`;
+    const inviteText = `Join my Cloud News Meet:\nTitle: ${meetingTitle || displayCode}\nCode: ${displayCode}\nLink: ${meetingLink}\nApp: cloudnews://room/${displayCode}`;
 
     Alert.alert(
       'Invitation Sent!',
@@ -2676,7 +2676,7 @@ export const MeetingRoomContent: React.FC<{
   };
 
   const handleShareInviteLink = async () => {
-    const inviteText = `Join my Cloud News Meet:\nTitle: ${meetingTitle || displayCode}\nCode: ${displayCode}\nLink: ${meetingLink}`;
+    const inviteText = `Join my Cloud News Meet:\nTitle: ${meetingTitle || displayCode}\nCode: ${displayCode}\nLink: ${meetingLink}\nApp: cloudnews://room/${displayCode}`;
     try {
       await Share.share({
         message: inviteText,

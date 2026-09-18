@@ -123,12 +123,10 @@ const linkingConfig: LinkingOptions<RootStackParamList> = {
       if (normalizedCode && (cleanDigits.length >= 5 || normalizedCode.toLowerCase().startsWith('cloudnews-'))) {
         return {
           routes: [
-            { name: 'Onboarding' },
             {
               name: 'Join',
               params: {
                 meetingCode: normalizedCode,
-                isGuest: true,
               },
             },
           ],

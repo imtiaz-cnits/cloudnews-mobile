@@ -96,6 +96,8 @@ export const JoinScreen: React.FC = () => {
   const [muteAudio, setMuteAudio] = useState(false);
   const [muteVideo, setMuteVideo] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [isHostUser, setIsHostUser] = useState(false);
+  const [hostUserName, setHostUserName] = useState('');
 
   // Validation State
   const [isValidating, setIsValidating] = useState(false);
@@ -106,17 +108,26 @@ export const JoinScreen: React.FC = () => {
   useEffect(() => {
     const loadSavedUser = async () => {
       try {
-        if (!route.params?.isGuest) {
-          const userDataStr = await storage.getItem(StorageKeys.USER_DATA);
-          const isGuest = await storage.getItem(StorageKeys.IS_GUEST);
-          if (userDataStr && isGuest !== 'true') {
+        const [token, userDataStr, isGuestStr] = await Promise.all([
+          storage.getItem(StorageKeys.AUTH_TOKEN),
+          storage.getItem(StorageKeys.USER_DATA),
+          storage.getItem(StorageKeys.IS_GUEST),
+        ]);
+
+        const hasHostAuth = Boolean(token && isGuestStr !== 'true');
+        setIsHostUser(hasHostAuth);
+
+        if (hasHostAuth && userDataStr) {
+          try {
             const user = JSON.parse(userDataStr);
-            if (user.name) {
+            if (user?.name) {
+              setHostUserName(user.name);
               setDisplayName(user.name);
               return;
             }
-          }
+          } catch {}
         }
+
         const lastGuestName = await storage.getItem('cloudnews_last_guest_name');
         if (lastGuestName) {
           setDisplayName(lastGuestName);
@@ -126,7 +137,7 @@ export const JoinScreen: React.FC = () => {
       }
     };
     loadSavedUser();
-  }, [route.params?.isGuest]);
+  }, []);
 
   // Validate meeting code against backend
   const checkMeetingCode = useCallback(async (codeToValidate: string) => {
@@ -232,18 +243,20 @@ export const JoinScreen: React.FC = () => {
       return;
     }
 
-    const effectiveDisplayName = displayName.trim() || `Guest_${Math.floor(1000 + Math.random() * 9000)}`;
+    const effectiveDisplayName =
+      displayName.trim() ||
+      hostUserName ||
+      `Guest_${Math.floor(1000 + Math.random() * 9000)}`;
 
     setLoading(true);
     try {
       // 1. Determine if this join is a guest join
-      const isParamGuest = Boolean(route.params?.isGuest);
       let token = await storage.getItem(StorageKeys.AUTH_TOKEN);
       const isSavedGuest = (await storage.getItem(StorageKeys.IS_GUEST)) === 'true';
 
-      // CRITICAL: If the user already has an active authenticated host session, do NOT downgrade or wipe host token
+      // CRITICAL: If the user already has an active authenticated host session, NEVER downgrade or wipe host token
       const hasHostSession = Boolean(token && !isSavedGuest);
-      const isGuestJoin = !hasHostSession && (isParamGuest || !token || isSavedGuest);
+      const isGuestJoin = !hasHostSession;
 
       if (isGuestJoin) {
         let hasValidGuestSession = false;
@@ -282,18 +295,23 @@ export const JoinScreen: React.FC = () => {
       try {
         meetingRes = await joinMeeting(cleanCode, passcode.trim() || undefined);
       } catch (joinErr: any) {
-        // Handle token expiration: re-login guest and retry once
+        // Handle token expiration: re-login guest if guest; if host alert cleanly
         if (joinErr.response?.status === 401) {
-          console.log('[Join] Token expired (401). Retrying with fresh guest session...');
-          await storage.removeItem(StorageKeys.AUTH_TOKEN);
-          await storage.removeItem(StorageKeys.IS_GUEST);
-          const freshGuest = await guestLogin(effectiveDisplayName);
-          if (freshGuest.success && freshGuest.data?.token) {
-            await storage.setItem(StorageKeys.AUTH_TOKEN, freshGuest.data.token);
-            await storage.setItem(StorageKeys.IS_GUEST, 'true');
-            meetingRes = await joinMeeting(cleanCode, passcode.trim() || undefined);
+          if (!hasHostSession) {
+            console.log('[Join] Token expired (401). Retrying with fresh guest session...');
+            await storage.removeItem(StorageKeys.AUTH_TOKEN);
+            await storage.removeItem(StorageKeys.IS_GUEST);
+            const freshGuest = await guestLogin(effectiveDisplayName);
+            if (freshGuest.success && freshGuest.data?.token) {
+              await storage.setItem(StorageKeys.AUTH_TOKEN, freshGuest.data.token);
+              await storage.setItem(StorageKeys.IS_GUEST, 'true');
+              meetingRes = await joinMeeting(cleanCode, passcode.trim() || undefined);
+            } else {
+              throw joinErr;
+            }
           } else {
-            throw joinErr;
+            Alert.alert(t('common.error'), 'Host session expired. Please log in again.');
+            return;
           }
         } else {
           throw joinErr;
@@ -363,6 +381,8 @@ export const JoinScreen: React.FC = () => {
           onPress={() => {
             if (navigation.canGoBack()) {
               navigation.goBack();
+            } else if (isHostUser) {
+              navigation.replace('Home');
             } else {
               navigation.replace('Onboarding');
             }
@@ -467,6 +487,14 @@ export const JoinScreen: React.FC = () => {
           <Text style={[styles.helperText, !isDark && { color: colors.textSecondary }]}>
             {t('join.displayNameHint')}
           </Text>
+          {isHostUser && (
+            <View style={styles.hostBadgeContainer}>
+              <CheckCircle2 color="#10B981" size={14} style={{ marginRight: 6 }} />
+              <Text style={styles.hostBadgeText}>
+                {t('join.joiningAsHost').replace('{name}', hostUserName || displayName)}
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Passcode Input (When required by meeting) */}
@@ -788,6 +816,23 @@ const styles = StyleSheet.create({
   joinBtn: {
     height: 56,
     borderRadius: 16,
+  },
+  hostBadgeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.28)',
+    alignSelf: 'flex-start',
+  },
+  hostBadgeText: {
+    fontSize: 12,
+    color: '#10B981',
+    fontWeight: '600',
   },
 });
 

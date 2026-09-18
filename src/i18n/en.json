@@ -104,7 +104,9 @@
     "passcodeLabel": "MEETING PASSCODE",
     "passcodePlaceholder": "Enter passcode",
     "passcodeRequired": "Passcode is required to join this meeting",
-    "joinFailed": "Join Failed"
+    "joinFailed": "Join Failed",
+    "joiningAsHost": "Joining with Host Account: {name}",
+    "joiningAsGuest": "Joining as Guest"
   },
   "meeting": {
     "connecting": "Connecting to meeting room...",

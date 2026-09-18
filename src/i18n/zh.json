@@ -104,7 +104,9 @@
     "passcodeLabel": "入会密码",
     "passcodePlaceholder": "输入入会密码",
     "passcodeRequired": "此会议需要输入密码方可加入",
-    "joinFailed": "入会失败"
+    "joinFailed": "入会失败",
+    "joiningAsHost": "使用主持人账号参会：{name}",
+    "joiningAsGuest": "以访客身份参会"
   },
   "meeting": {
     "connecting": "正在连接会议室...",
