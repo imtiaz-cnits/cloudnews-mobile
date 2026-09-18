@@ -233,6 +233,19 @@ export const GlobalMeetingOverlay: React.FC = () => {
     };
   }, [room]);
 
+  const handleFloatingLeave = useCallback(async () => {
+    if (activeMeeting?.isHost && activeMeeting.meetingCode) {
+      try {
+        await endMeetingApi(activeMeeting.meetingCode);
+      } catch {}
+    } else if (activeMeeting?.meetingCode) {
+      try {
+        await leaveMeetingApi(activeMeeting.meetingCode);
+      } catch {}
+    }
+    endMeeting();
+  }, [activeMeeting, endMeeting]);
+
   if (!activeMeeting || !activeMeeting.token || !activeMeeting.serverUrl) {
     return null;
   }
@@ -247,19 +260,6 @@ export const GlobalMeetingOverlay: React.FC = () => {
 
   const shouldEnableAudio = hasAudioPermission && !activeMeeting.muteAudio;
   const shouldEnableVideo = hasCameraPermission && !activeMeeting.muteVideo;
-
-  const handleFloatingLeave = useCallback(async () => {
-    if (activeMeeting?.isHost && activeMeeting.meetingCode) {
-      try {
-        await endMeetingApi(activeMeeting.meetingCode);
-      } catch {}
-    } else if (activeMeeting?.meetingCode) {
-      try {
-        await leaveMeetingApi(activeMeeting.meetingCode);
-      } catch {}
-    }
-    endMeeting();
-  }, [activeMeeting, endMeeting]);
 
   return (
     <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
