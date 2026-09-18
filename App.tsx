@@ -1,56 +1,100 @@
 /**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
+ * Cloud News App
  * @format
  */
-import React, { useEffect } from 'react';
-import { StatusBar } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import AppNavigator from './src/navigation/AppNavigator';
-import { initLiveKit } from './src/services/livekit';
+import "./global.css";
+import { registerGlobals } from '@livekit/react-native';
 
-import { NewAppScreen } from '@react-native/new-app-screen';
-import { StatusBar, StyleSheet, useColorScheme, View } from 'react-native';
-import {
-  SafeAreaProvider,
-  useSafeAreaInsets,
-} from 'react-native-safe-area-context';
-function App(): React.JSX.Element {
+// Register LiveKit WebRTC globals before any components render
+registerGlobals();
+
+import React, { useCallback, useEffect, useState } from 'react';
+import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import * as SplashScreen from 'expo-splash-screen';
+import { LanguageProvider } from './src/context/LanguageContext';
+import { ThemeProvider, useTheme } from './src/context/ThemeContext';
+import { UserProvider } from './src/context/UserContext';
+import { MeetingProvider } from './src/context/MeetingContext';
+import { GlobalMeetingOverlay } from './src/components/meeting/GlobalMeetingOverlay';
+import AppNavigator from './src/navigation/AppNavigator';
+import { ENV } from './src/config/env';
+import { loadCustomFonts } from './src/utils/fontLoader';
+
+import { getStoredAuth } from './src/services/api';
+import { RootStackParamList } from './src/navigation/types';
+
+// Keep the splash screen visible while we fetch resources
+SplashScreen.preventAutoHideAsync();
+
+const ThemedStatusBar: React.FC = () => {
+  const { isDark } = useTheme();
+  return <StatusBar style={isDark ? 'light' : 'dark'} />;
+};
+
+function App(): React.JSX.Element | null {
+  const [appIsReady, setAppIsReady] = useState(false);
+  const [initialRoute, setInitialRoute] = useState<keyof RootStackParamList>('Onboarding');
+
   useEffect(() => {
-    initLiveKit();
+    let isMounted = true;
+    (async () => {
+      try {
+        // Parallel bootstrap: 1. Native fonts, 2. Stored auth session & API token
+        const [loadedFonts, auth] = await Promise.all([
+          loadCustomFonts().catch(e => {
+            console.warn('[App] Error loading custom fonts:', e);
+            return false;
+          }),
+          getStoredAuth().catch(e => {
+            console.warn('[App] Error checking stored auth session:', e);
+            return { token: null, user: null, isGuest: false, isAuthenticated: false };
+          }),
+        ]);
+
+        console.log('[App] Cold-boot bootstrap ready. isAuthenticated:', auth.isAuthenticated);
+
+        if (isMounted) {
+          if (auth.isAuthenticated) {
+            setInitialRoute('Home');
+          } else {
+            setInitialRoute('Onboarding');
+          }
+        }
+      } catch (e) {
+        console.warn('[App] Bootstrap error:', e);
+      } finally {
+        if (isMounted) {
+          setAppIsReady(true);
+          await SplashScreen.hideAsync().catch(() => {});
+        }
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-function App() {
-  const isDarkMode = useColorScheme() === 'dark';
+  if (!appIsReady) {
+    return null;
+  }
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <AppContent />
-      <StatusBar barStyle="light-content" />
-      <AppNavigator />
+      <ThemeProvider>
+        <LanguageProvider>
+          <UserProvider>
+            <MeetingProvider>
+              <ThemedStatusBar />
+              <AppNavigator initialRouteName={initialRoute} />
+              <GlobalMeetingOverlay />
+            </MeetingProvider>
+          </UserProvider>
+        </LanguageProvider>
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }
-
-function AppContent() {
-  const safeAreaInsets = useSafeAreaInsets();
-
-  return (
-    <View style={styles.container}>
-      <NewAppScreen
-        templateFileName="App.tsx"
-        safeAreaInsets={safeAreaInsets}
-      />
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-});
 
 export default App;
