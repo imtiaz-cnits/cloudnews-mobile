@@ -58,5 +58,10 @@
         tools:replace="android:foregroundServiceType"
         android:exported="false" />
 
+    <service
+        android:name=".MeetingForegroundService"
+        android:foregroundServiceType="microphone|mediaProjection"
+        android:exported="false" />
+
   </application>
 </manifest>

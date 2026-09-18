@@ -94,7 +94,12 @@ import { getMeetingInviteLink, getUsers, uploadMeetingFile, User } from '../serv
 import { useTranslation } from '../hooks/useTranslation';
 import storage, { StorageKeys } from '../services/storage';
 import { useMeeting } from '../context/MeetingContext';
-import { acquireScreenShareWakeLock, releaseScreenShareWakeLock } from '../utils/wakeLock';
+import {
+  acquireScreenShareWakeLock,
+  releaseScreenShareWakeLock,
+  startMeetingForegroundService,
+  stopMeetingForegroundService,
+} from '../utils/wakeLock';
 import { startAudioSession, stopAudioSession } from '../services/livekit';
 import { MediaPreviewModal, MediaPreviewItem, sanitizeMediaUrl } from '../components/meeting/MediaPreviewModal';
 
@@ -995,11 +1000,18 @@ export const MeetingRoomContent: React.FC<{
     };
     initAudio();
 
+    // Start Native Android Foreground Service to prevent OS from killing app or cutting mic when minimized
+    startMeetingForegroundService(
+      meetingTitle || roomName || 'CloudNews Meeting',
+      '通话中 · 麦克风与音频已保持开启 / Meeting active · Mic & audio running'
+    );
+
     return () => {
       isMounted = false;
       stopAudioSession();
+      stopMeetingForegroundService();
     };
-  }, [fetchAudioOutputs]);
+  }, [fetchAudioOutputs, meetingTitle, roomName]);
 
   const handleSelectAudioOutput = async (deviceId: string) => {
     try {
@@ -1164,7 +1176,11 @@ export const MeetingRoomContent: React.FC<{
       console.log('[AppState] Meeting Room state changed to:', nextAppState);
       if (nextAppState === 'background' || nextAppState === 'inactive') {
         // App is minimized to Android Home Screen or another app is focused.
-        // Guarantee audio session & microphone capture remain active in background without being silenced.
+        // Guarantee native foreground service & microphone capture remain active in background without being silenced.
+        startMeetingForegroundService(
+          meetingTitle || roomName || 'CloudNews Meeting',
+          '通话中 · 麦克风与音频已保持开启 / Meeting active · Mic & audio running'
+        );
         if (localParticipant && !isMicMuted) {
           console.log('[AppState] Ensuring microphone track is preserved in background');
           localParticipant.setMicrophoneEnabled(true).catch(err => {
@@ -1183,7 +1199,7 @@ export const MeetingRoomContent: React.FC<{
     return () => {
       subscription.remove();
     };
-  }, [localParticipant, isMicMuted]);
+  }, [localParticipant, isMicMuted, meetingTitle, roomName]);
 
   const allParticipants = useMemo(() => {
     const map = new Map<string, Participant>();
