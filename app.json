@@ -18,7 +18,23 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.cloudnews.mobile"
+      "bundleIdentifier": "com.cloudnews.mobile",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.cloudnews.mobile"
+        ]
+      },
+      "infoPlist": {
+        "RTCAppGroupIdentifier": "group.com.cloudnews.mobile",
+        "RTCScreenSharingExtension": "com.cloudnews.mobile.broadcast",
+        "UIBackgroundModes": [
+          "audio",
+          "voip",
+          "fetch"
+        ],
+        "NSCameraUsageDescription": "CloudNews requires camera access for video conferencing.",
+        "NSMicrophoneUsageDescription": "CloudNews requires microphone access for audio and voice communication."
+      }
     },
     "android": {
       "adaptiveIcon": {

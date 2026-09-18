@@ -13,6 +13,7 @@ import com.facebook.react.defaults.DefaultReactNativeHost
 import com.facebook.react.soloader.OpenSourceMergedSoMapping
 import com.facebook.soloader.SoLoader
 import com.livekit.reactnative.LiveKitReactNative
+import com.oney.WebRTCModule.WebRTCModuleOptions
 
 import expo.modules.ApplicationLifecycleDispatcher
 import expo.modules.ReactNativeHostWrapper
@@ -42,6 +43,7 @@ class MainApplication : Application(), ReactApplication {
 
   override fun onCreate() {
     super.onCreate()
+    WebRTCModuleOptions.getInstance().enableMediaProjectionService = true
     LiveKitReactNative.setup(this)
     SoLoader.init(this, OpenSourceMergedSoMapping)
     if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED) {

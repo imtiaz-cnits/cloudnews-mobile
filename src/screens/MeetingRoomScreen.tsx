@@ -90,6 +90,8 @@ import {
   KeyboardAvoidingView,
   AppState,
   AppStateStatus,
+  findNodeHandle,
+  NativeModules,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
@@ -117,6 +119,17 @@ import {
 import { startAudioSession, stopAudioSession } from '../services/livekit';
 import { MediaPreviewModal, MediaPreviewItem, sanitizeMediaUrl } from '../components/meeting/MediaPreviewModal';
 import { setPipConfig, prepareScreenShare, addPipListener } from '../utils/pip';
+
+// Safely resolve iOS-only ScreenCapturePickerView without crashing on Android
+const ScreenCapturePickerViewComponent: any = Platform.OS === 'ios'
+  ? (() => {
+      try {
+        return require('@livekit/react-native-webrtc').ScreenCapturePickerView;
+      } catch (e) {
+        return null;
+      }
+    })()
+  : null;
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -1227,6 +1240,7 @@ export const MeetingRoomContent: React.FC<{
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isScreenShareToggling, setIsScreenShareToggling] = useState(false);
   const isScreenShareTogglingRef = useRef(false);
+  const screenCapturePickerRef = useRef<any>(null);
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
 
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -1520,7 +1534,17 @@ export const MeetingRoomContent: React.FC<{
     setIsScreenSharing(Boolean(localParticipant.isScreenShareEnabled));
 
     const syncScreenShare = () => {
-      setIsScreenSharing(Boolean(localParticipant.isScreenShareEnabled));
+      const enabled = Boolean(localParticipant.isScreenShareEnabled);
+      setIsScreenSharing(enabled);
+      if (!enabled) {
+        // System notification "Stop Sharing" or OS single-app stop fired
+        prepareScreenShare(false);
+        setPipConfig(true, false);
+        releaseScreenShareWakeLock();
+        if (!isMicMuted && !localParticipant.isMicrophoneEnabled) {
+          localParticipant.setMicrophoneEnabled(true).catch(() => {});
+        }
+      }
     };
 
     localParticipant.on(ParticipantEvent.TrackPublished, syncScreenShare);
@@ -1536,7 +1560,7 @@ export const MeetingRoomContent: React.FC<{
       localParticipant.off(ParticipantEvent.TrackUnmuted, syncScreenShare);
       localParticipant.off(ParticipantEvent.LocalTrackUnpublished, syncScreenShare);
     };
-  }, [localParticipant]);
+  }, [localParticipant, isMicMuted]);
 
   // Synchronize initial mic and camera track states based on user pre-call choices
   useEffect(() => {
@@ -2750,7 +2774,23 @@ export const MeetingRoomContent: React.FC<{
         // Record current microphone state before screen share starts
         const micShouldBeActive = !isMicMuted;
 
-        // 2. Mobile-optimized screen share: 15fps / 1.5Mbps prevents hardware encoder stalls and frame drops on phones
+        // 2. On iOS: Trigger native ReplayKit broadcast picker sheet
+        if (
+          Platform.OS === 'ios' &&
+          screenCapturePickerRef.current &&
+          NativeModules.ScreenCapturePickerViewManager?.show
+        ) {
+          try {
+            const reactTag = findNodeHandle(screenCapturePickerRef.current);
+            if (reactTag) {
+              NativeModules.ScreenCapturePickerViewManager.show(reactTag);
+            }
+          } catch (pickerErr) {
+            console.warn('[ScreenShare] Launching iOS ScreenCapturePicker failed:', pickerErr);
+          }
+        }
+
+        // 3. Mobile-optimized screen share: 15fps / 1.5Mbps prevents hardware encoder stalls and frame drops on phones
         await localParticipant.setScreenShareEnabled(
           true,
           {
@@ -2817,13 +2857,16 @@ export const MeetingRoomContent: React.FC<{
         msg.includes('reject') ||
         msg.includes('abort') ||
         msg.includes('notallowed') ||
-        msg.includes('result_canceled')
+        msg.includes('result_canceled') ||
+        msg.includes('broadcast was cancelled') ||
+        msg.includes('user cancelled')
       ) {
         return;
       }
+      const platformName = Platform.OS === 'ios' ? 'iOS / iPhone' : 'Android';
       Alert.alert(
         'Screen Share Notice',
-        'Could not share screen. Please allow screen recording/casting when prompted by Android.'
+        `Could not share screen. Please allow screen recording/casting when prompted by ${platformName}.`
       );
     } finally {
       // Release toggle lock with buffer to debounce double-taps
@@ -4349,6 +4392,14 @@ export const MeetingRoomContent: React.FC<{
         media={previewMedia}
         onClose={() => setPreviewMedia(null)}
       />
+
+      {/* --- NATIVE REPLAYKIT BROADCAST PICKER (iOS Only) --- */}
+      {Platform.OS === 'ios' && ScreenCapturePickerViewComponent && (
+        <ScreenCapturePickerViewComponent
+          ref={screenCapturePickerRef}
+          style={styles.iosBroadcastPicker}
+        />
+      )}
     </View>
   );
 };
@@ -6276,6 +6327,13 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 12,
     fontFamily: 'PlusJakartaSans-Bold',
+  },
+  iosBroadcastPicker: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    opacity: 0,
+    bottom: -100,
   },
 });
 
