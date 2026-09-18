@@ -310,6 +310,35 @@ export const uploadMeetingFile = async (
   return response.data;
 };
 
+export interface MeetingMessageItem {
+  id: number | string;
+  meeting_id?: number;
+  meeting_code?: string;
+  user_id?: number;
+  sender_name: string;
+  type: 'text' | 'image' | 'video' | 'audio' | 'document';
+  text?: string;
+  file_name?: string;
+  file_size?: string;
+  media_url?: string;
+  duration?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export const getMeetingMessages = async (code: string): Promise<ApiResponse<MeetingMessageItem[]>> => {
+  const cleanCode = code.replace(/[\s-]/g, '');
+  return (await apiClient.get(`/meetings/${cleanCode}/messages`)).data;
+};
+
+export const sendMeetingMessage = async (
+  code: string,
+  data: Partial<MeetingMessageItem>
+): Promise<ApiResponse<MeetingMessageItem>> => {
+  const cleanCode = code.replace(/[\s-]/g, '');
+  return (await apiClient.post(`/meetings/${cleanCode}/messages`, data)).data;
+};
+
 export const getMeetingInviteLink = (meetingCode: string): string => {
   return `${ENV.INVITE_WEB_URL}/room/${meetingCode}`;
 };
@@ -330,4 +359,6 @@ export default {
   getUsers,
   updateProfile,
   uploadMeetingFile,
+  getMeetingMessages,
+  sendMeetingMessage,
 };

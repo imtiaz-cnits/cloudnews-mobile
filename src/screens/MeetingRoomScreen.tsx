@@ -90,7 +90,16 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
 import { RootStackNavigationProp, RootStackRouteProp } from '../navigation/types';
-import { getMeetingInviteLink, getUsers, uploadMeetingFile, User, endMeeting, leaveMeeting } from '../services/api';
+import {
+  getMeetingInviteLink,
+  getUsers,
+  uploadMeetingFile,
+  User,
+  endMeeting,
+  leaveMeeting,
+  getMeetingMessages,
+  sendMeetingMessage,
+} from '../services/api';
 import { useTranslation } from '../hooks/useTranslation';
 import storage, { StorageKeys } from '../services/storage';
 import { useMeeting } from '../context/MeetingContext';
@@ -1460,6 +1469,84 @@ export const MeetingRoomContent: React.FC<{
     )
   );
 
+  const [currentUserName, setCurrentUserName] = useState<string>('');
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await storage.getItem(StorageKeys.USER_DATA);
+        if (raw) {
+          const u = JSON.parse(raw);
+          if (u?.name) setCurrentUserName(u.name);
+        }
+      } catch {}
+    })();
+  }, []);
+
+  // Fetch previous chat messages and shared files from server (for new joiners and history)
+  const fetchMeetingMessages = useCallback(async () => {
+    const code = meetingCode || roomName;
+    if (!code) return;
+
+    try {
+      const res = await getMeetingMessages(code);
+      if (res.success && Array.isArray(res.data)) {
+        const historyMessages: ChatMessage[] = res.data.map(m => {
+          const isSenderSelf = Boolean(
+            (localParticipant?.name && m.sender_name === localParticipant.name) ||
+            (currentUserName && m.sender_name === currentUserName) ||
+            (isHost && m.sender_name === 'Host')
+          );
+          const timeFormatted = m.created_at
+            ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+          return {
+            id: String(m.id),
+            sender: m.sender_name || 'Participant',
+            text: m.text || '',
+            time: timeFormatted,
+            isSelf: isSenderSelf,
+            type: m.type || 'text',
+            fileName: m.file_name,
+            fileSize: m.file_size,
+            mediaUrl: sanitizeMediaUrl(m.media_url),
+            duration: m.duration,
+          };
+        });
+
+        // Merge with existing messages and deduplicate
+        setMessages(prev => {
+          const map = new Map<string, ChatMessage>();
+          // 1. Add historical messages from database
+          historyMessages.forEach(msg => map.set(msg.id, msg));
+          // 2. Add local/live messages not yet in history
+          prev.forEach(msg => {
+            const alreadyInHistory = historyMessages.some(
+              h => h.id === msg.id || (h.text === msg.text && h.sender === msg.sender && h.type === msg.type)
+            );
+            if (!alreadyInHistory) {
+              map.set(msg.id, msg);
+            }
+          });
+          return Array.from(map.values());
+        });
+      }
+    } catch (err) {
+      console.warn('[MeetingRoomScreen] Error fetching meeting messages history:', err);
+    }
+  }, [meetingCode, roomName, localParticipant, currentUserName, isHost]);
+
+  // Load message history on mount and whenever chat drawer is opened
+  useEffect(() => {
+    fetchMeetingMessages();
+  }, [fetchMeetingMessages]);
+
+  useEffect(() => {
+    if (isChatOpen) {
+      fetchMeetingMessages();
+    }
+  }, [isChatOpen, fetchMeetingMessages]);
+
   // Active meeting participants (for video grid and members list)
   const activeMeetingParticipants = useMemo(() => {
     let list = allParticipants;
@@ -1975,7 +2062,12 @@ export const MeetingRoomContent: React.FC<{
             mediaUrl: sanitizeMediaUrl(parsed.mediaUrl),
             duration: parsed.duration,
           };
-          setMessages(prev => [...prev, newMessage]);
+          setMessages(prev => {
+            if (prev.some(m => m.id === newMessage.id || (m.text === newMessage.text && m.sender === newMessage.sender && m.type === newMessage.type))) {
+              return prev;
+            }
+            return [...prev, newMessage];
+          });
           if (!isChatOpenRef.current) {
             setUnreadChatCount(prev => prev + 1);
           }
@@ -2096,7 +2188,19 @@ export const MeetingRoomContent: React.FC<{
         console.warn('[Chat] Notice: message broadcast deferred (channel negotiating):', e2);
       }
     }
-  }, [chatInput, localParticipant, room, isHost]);
+
+    // 3. Persist to server so future joiners can view previous chat history
+    const code = meetingCode || roomName;
+    if (code) {
+      sendMeetingMessage(code, {
+        type: 'text',
+        text: textToSend,
+        sender_name: senderName,
+      }).catch(err => {
+        console.warn('[Chat] Failed to persist chat message to server:', err);
+      });
+    }
+  }, [chatInput, localParticipant, room, isHost, meetingCode, roomName]);
 
   const handlePickAndSendAttachment = useCallback(async () => {
     try {
@@ -2228,6 +2332,22 @@ export const MeetingRoomContent: React.FC<{
           }
           console.warn('[MeetingRoomScreen] Warning broadcasting attachment:', e2);
         }
+      }
+
+      // 3. Persist file attachment record to server so future joiners can view & download
+      const code = meetingCode || roomName;
+      if (code) {
+        sendMeetingMessage(code, {
+          type: category,
+          text: title,
+          file_name: title,
+          file_size: resolvedSize,
+          media_url: finalMediaUrl,
+          duration: defaultDuration,
+          sender_name: senderName,
+        }).catch(err => {
+          console.warn('[MeetingRoomScreen] Failed to persist file message to server:', err);
+        });
       }
     } catch (err) {
       console.warn('[MeetingRoomScreen] Error picking/sending attachment:', err);
