@@ -2790,7 +2790,7 @@ export const MeetingRoomContent: React.FC<{
           }
         }
 
-        // 3. Mobile-optimized screen share: 15fps / 1.5Mbps prevents hardware encoder stalls and frame drops on phones
+        // 3. High-definition screen share at 30fps / 3.0Mbps matching LiveKit & GlobalMeetingOverlay standard
         await localParticipant.setScreenShareEnabled(
           true,
           {
@@ -2800,8 +2800,8 @@ export const MeetingRoomContent: React.FC<{
           {
             simulcast: false,
             screenShareEncoding: {
-              maxBitrate: 1_500_000,
-              maxFramerate: 15,
+              maxBitrate: 3_000_000,
+              maxFramerate: 30,
             },
             degradationPreference: 'balanced',
           } as any
