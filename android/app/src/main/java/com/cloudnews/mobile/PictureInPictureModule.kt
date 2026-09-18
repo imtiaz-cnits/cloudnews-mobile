@@ -26,11 +26,15 @@ class PictureInPictureModule(reactContext: ReactApplicationContext) : ReactConte
         var isScreenSharing: Boolean = false
             private set
 
+        @Volatile
+        var isScreenSharingStarting: Boolean = false
+            private set
+
         /**
          * PiP is permitted when participant is actively in a meeting
-         * AND no screen sharing (local or remote) is active.
+         * AND no screen sharing (local or remote) is active or being prepared.
          */
-        fun canEnterPip(): Boolean = isInMeeting && !isScreenSharing
+        fun canEnterPip(): Boolean = isInMeeting && !isScreenSharing && !isScreenSharingStarting
 
         private var instance: PictureInPictureModule? = null
 
@@ -40,6 +44,7 @@ class PictureInPictureModule(reactContext: ReactApplicationContext) : ReactConte
 
         fun enterPipMode(activity: Activity?, width: Int = 9, height: Int = 16): Boolean {
             if (activity == null || activity.isFinishing || activity.isDestroyed) return false
+            if (!canEnterPip()) return false
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
 
             val pm = activity.packageManager
@@ -113,7 +118,33 @@ class PictureInPictureModule(reactContext: ReactApplicationContext) : ReactConte
     fun setPipConfig(inMeeting: Boolean, screenSharing: Boolean) {
         isInMeeting = inMeeting
         isScreenSharing = screenSharing
+        if (!screenSharing) {
+            isScreenSharingStarting = false
+        }
 
+        val activity = currentActivity ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                activity.runOnUiThread {
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        val builder = PictureInPictureParams.Builder()
+                            .setAspectRatio(Rational(9, 16))
+                            .setAutoEnterEnabled(canEnterPip())
+                        activity.setPictureInPictureParams(builder.build())
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    @ReactMethod
+    fun prepareScreenShare(starting: Boolean) {
+        isScreenSharingStarting = starting
+        if (starting) {
+            isScreenSharing = true
+        }
         val activity = currentActivity ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {

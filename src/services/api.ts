@@ -158,11 +158,32 @@ export const logout = async (): Promise<void> => {
 };
 
 // 3. Guest Login
-export const guestLogin = async (name: string): Promise<ApiResponse<AuthResponse>> => {
-  const response = await apiClient.post('/auth/guest', { name });
+export const guestLogin = async (name: string, deviceId?: string): Promise<ApiResponse<AuthResponse>> => {
+  let effectiveDeviceId: string | undefined = deviceId;
+  if (!effectiveDeviceId) {
+    try {
+      const saved = await storage.getItem('cloudnews_device_uuid');
+      if (saved) {
+        effectiveDeviceId = saved;
+      } else {
+        effectiveDeviceId = 'dev_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+        await storage.setItem('cloudnews_device_uuid', effectiveDeviceId);
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  const response = await apiClient.post('/auth/guest', {
+    name,
+    device_id: effectiveDeviceId,
+  });
   if (response.data.success) {
     await storage.setItem(StorageKeys.AUTH_TOKEN, response.data.data.token);
     await storage.setItem(StorageKeys.IS_GUEST, 'true');
+    if (response.data.data.user) {
+      await storage.setItem(StorageKeys.USER_DATA, JSON.stringify(response.data.data.user));
+    }
     setAuthToken(response.data.data.token);
   }
   return response.data;

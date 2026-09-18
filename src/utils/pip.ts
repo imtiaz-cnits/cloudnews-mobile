@@ -66,6 +66,24 @@ export function setPipConfig(inMeeting: boolean, isScreenSharing: boolean): void
 }
 
 /**
+ * Disables PiP immediately before requesting Android MediaProjection permissions.
+ * Prevents OS from auto-entering PiP mode when the system recording prompt appears.
+ */
+export function prepareScreenShare(starting: boolean): void {
+  if (Platform.OS === 'android') {
+    try {
+      if (PictureInPictureModule?.prepareScreenShare) {
+        PictureInPictureModule.prepareScreenShare(starting);
+      } else if (PictureInPictureModule?.setPipConfig) {
+        PictureInPictureModule.setPipConfig(true, starting);
+      }
+    } catch (err) {
+      console.warn('[PiP] prepareScreenShare error:', err);
+    }
+  }
+}
+
+/**
  * Subscribes to Picture-in-Picture state change events.
  * Returns an unsubscribe callback.
  */

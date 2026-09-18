@@ -102,7 +102,7 @@ import {
 } from '../utils/wakeLock';
 import { startAudioSession, stopAudioSession } from '../services/livekit';
 import { MediaPreviewModal, MediaPreviewItem, sanitizeMediaUrl } from '../components/meeting/MediaPreviewModal';
-import { enterPictureInPicture, setPipConfig, addPipListener } from '../utils/pip';
+import { enterPictureInPicture, setPipConfig, prepareScreenShare, addPipListener } from '../utils/pip';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -1471,10 +1471,44 @@ export const MeetingRoomContent: React.FC<{
 
   // Active meeting participants (for video grid and members list)
   const activeMeetingParticipants = useMemo(() => {
-    if (!isHost || waitingGuests.length === 0) return allParticipants;
-    const waitingSet = new Set(waitingGuests.map(g => g.identity));
-    return allParticipants.filter(p => !waitingSet.has(p.identity));
-  }, [isHost, allParticipants, waitingGuests]);
+    let list = allParticipants;
+    if (isHost && waitingGuests.length > 0) {
+      const waitingSet = new Set(waitingGuests.map(g => g.identity));
+      list = list.filter(p => !waitingSet.has(p.identity));
+    }
+
+    // Deduplicate participants to eliminate ghost / reconnect duplicate cards for the same user
+    const seenMap = new Map<string, Participant>();
+    for (const p of list) {
+      const rawKey = (p.name || p.identity || '').trim();
+      const key = rawKey.toLowerCase();
+      if (!key) {
+        seenMap.set(p.identity, p);
+        continue;
+      }
+
+      if (!seenMap.has(key)) {
+        seenMap.set(key, p);
+      } else {
+        const existing = seenMap.get(key)!;
+        // Priority 1: If current participant is local, local always wins over any remote stale ghost
+        if (p.identity === localParticipant?.identity) {
+          seenMap.set(key, p);
+        } else if (existing.identity === localParticipant?.identity) {
+          // Keep existing local
+        } else {
+          // Priority 2: Keep the participant that is speaking, or has active published tracks
+          const pHasTracks = p.trackPublications && p.trackPublications.size > 0;
+          const existHasTracks = existing.trackPublications && existing.trackPublications.size > 0;
+          if (p.isSpeaking || (pHasTracks && !existHasTracks)) {
+            seenMap.set(key, p);
+          }
+        }
+      }
+    }
+
+    return Array.from(seenMap.values());
+  }, [isHost, allParticipants, waitingGuests, localParticipant]);
 
   // User manual layout toggle: full screen vs grid mode
   const [isGridMode, setIsGridMode] = useState(false);
@@ -2107,26 +2141,30 @@ export const MeetingRoomContent: React.FC<{
     const nextSharing = !isScreenSharing;
     try {
       if (nextSharing) {
+        // 1. Immediately disable PiP auto-enter so Android 12+ does not trigger PiP when system dialog appears
+        prepareScreenShare(true);
+
         // Record current microphone state before screen share starts
         const micShouldBeActive = !isMicMuted;
 
+        // 2. Mobile-optimized screen share: 15fps / 1.5Mbps prevents hardware encoder stalls and frame drops on phones
         await localParticipant.setScreenShareEnabled(
           true,
           {
             audio: false,
-            resolution: ScreenSharePresets.h1080fps30.resolution,
             contentHint: 'detail',
           },
           {
             simulcast: false,
             screenShareEncoding: {
-              maxBitrate: 3_000_000,
-              maxFramerate: 30,
+              maxBitrate: 1_500_000,
+              maxFramerate: 15,
             },
-            degradationPreference: 'maintain-resolution',
+            degradationPreference: 'balanced',
           } as any
         );
         setIsScreenSharing(true);
+        setPipConfig(true, true);
 
         // Guarantee that local microphone track is NOT disposed or unpublished, and coexists with screen share
         if (micShouldBeActive && !localParticipant.isMicrophoneEnabled) {
@@ -2138,10 +2176,12 @@ export const MeetingRoomContent: React.FC<{
           }
         }
       } else {
+        prepareScreenShare(false);
         try {
           await localParticipant.setScreenShareEnabled(false);
         } finally {
           setIsScreenSharing(false);
+          setPipConfig(true, false);
           releaseScreenShareWakeLock();
         }
 
@@ -2156,6 +2196,8 @@ export const MeetingRoomContent: React.FC<{
       }
     } catch (e: any) {
       console.error('[ScreenShare] Error:', e);
+      prepareScreenShare(false);
+      setPipConfig(true, false);
       const msg = (e?.message || e?.name || String(e) || '').toLowerCase();
       // Gracefully handle user cancelling the OS media projection prompt
       if (
@@ -2181,6 +2223,8 @@ export const MeetingRoomContent: React.FC<{
   // Automatically stop screen sharing if all other participants leave the meeting
   useEffect(() => {
     if (isScreenSharing && allParticipants.length <= 1 && localParticipant) {
+      prepareScreenShare(false);
+      setPipConfig(true, false);
       localParticipant.setScreenShareEnabled(false).catch(err => {
         console.warn('[ScreenShare] Auto-stop failed:', err);
       }).finally(() => {

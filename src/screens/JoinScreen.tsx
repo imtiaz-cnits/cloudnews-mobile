@@ -246,17 +246,30 @@ export const JoinScreen: React.FC = () => {
       const isGuestJoin = !hasHostSession && (isParamGuest || !token || isSavedGuest);
 
       if (isGuestJoin) {
-        console.log('[Join] Performing seamless guest login for:', effectiveDisplayName);
-        const guestRes = await guestLogin(effectiveDisplayName);
-        if (guestRes.success && guestRes.data?.token) {
-          token = guestRes.data.token;
-          await storage.setItem(StorageKeys.AUTH_TOKEN, token);
-          await storage.setItem(StorageKeys.IS_GUEST, 'true');
-          if (guestRes.data.user) {
-            await storage.setItem(StorageKeys.USER_DATA, JSON.stringify(guestRes.data.user));
+        let hasValidGuestSession = false;
+        try {
+          const storedUserStr = await storage.getItem(StorageKeys.USER_DATA);
+          if (storedUserStr && token && isSavedGuest) {
+            const parsedUser = JSON.parse(storedUserStr);
+            if (parsedUser?.name === effectiveDisplayName) {
+              hasValidGuestSession = true;
+            }
           }
-        } else {
-          throw new Error(guestRes.message || 'Guest authentication failed. Please check network.');
+        } catch {}
+
+        if (!hasValidGuestSession) {
+          console.log('[Join] Performing seamless guest login for:', effectiveDisplayName);
+          const guestRes = await guestLogin(effectiveDisplayName);
+          if (guestRes.success && guestRes.data?.token) {
+            token = guestRes.data.token;
+            await storage.setItem(StorageKeys.AUTH_TOKEN, token);
+            await storage.setItem(StorageKeys.IS_GUEST, 'true');
+            if (guestRes.data.user) {
+              await storage.setItem(StorageKeys.USER_DATA, JSON.stringify(guestRes.data.user));
+            }
+          } else {
+            throw new Error(guestRes.message || 'Guest authentication failed. Please check network.');
+          }
         }
       }
 
