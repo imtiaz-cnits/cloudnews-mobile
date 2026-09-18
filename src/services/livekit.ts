@@ -31,11 +31,10 @@ export const DEFAULT_ROOM_OPTIONS: RoomOptions = {
     autoGainControl: true,
   },
   publishDefaults: {
-    videoCodec: 'h264',
     dtx: true,
     red: true,
     screenShareEncoding: {
-      maxBitrate: 6_000_000,
+      maxBitrate: 3_000_000,
       maxFramerate: 30,
     },
   },

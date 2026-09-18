@@ -460,10 +460,18 @@ const ScreenShareView: React.FC<{
         /* Remote Screen Share View: Displays the video stream shared by other participants */
         <>
           <VideoTrack trackRef={track} style={styles.cardVideo} objectFit="contain" mirror={false} />
+          {(!track?.publication?.track || track?.publication?.isMuted) && (
+            <View style={styles.screenShareLoadingOverlay} pointerEvents="none">
+              <ActivityIndicator size="large" color="#00A8FF" style={{ marginBottom: 12 }} />
+              <Text style={styles.screenShareLoadingText}>
+                {t('meeting.connectingScreenShare') || 'Connecting to screen share...'}
+              </Text>
+            </View>
+          )}
           <TouchableOpacity
             activeOpacity={1}
             onPress={onPress}
-            style={[StyleSheet.absoluteFill, { zIndex: 1 }]}
+            style={[StyleSheet.absoluteFill, { zIndex: 2 }]}
           />
         </>
       )}
@@ -1124,15 +1132,43 @@ export const MeetingRoomContent: React.FC<{
   const { localParticipant } = useLocalParticipant();
 
   const activeScreenShare = useMemo(() => {
-    // 1. Prefer remote screen share if active so participants always see the presenter
+    // 1. Remote screen share: any remote participant with a screen share publication
     const remoteShare = screenShareTracks.find(
-      t => !t.participant?.isLocal && (localParticipant ? t.participant?.identity !== localParticipant.identity : true) && t.publication?.track && !t.publication?.isMuted
+      t => !t.participant?.isLocal && (localParticipant ? t.participant?.identity !== localParticipant.identity : true) && Boolean(t.publication)
     );
     if (remoteShare) return remoteShare;
 
-    // 2. Otherwise fall back to local screen share
-    return screenShareTracks.find(t => t.publication?.track && !t.publication?.isMuted);
-  }, [screenShareTracks, localParticipant]);
+    // 2. Local screen share: if local user is sharing screen
+    if (isScreenSharing) {
+      const localShare = screenShareTracks.find(
+        t => (t.participant?.isLocal || (localParticipant && t.participant?.identity === localParticipant.identity))
+      );
+      if (localShare) return localShare;
+
+      if (localParticipant) {
+        return {
+          participant: localParticipant,
+          source: Track.Source.ScreenShare,
+          publication: localParticipant.getTrackPublication(Track.Source.ScreenShare),
+        };
+      }
+    }
+
+    return screenShareTracks.find(t => Boolean(t.publication));
+  }, [screenShareTracks, localParticipant, isScreenSharing]);
+
+  // Auto-subscribe to remote screen share tracks as soon as they are announced
+  useEffect(() => {
+    screenShareTracks.forEach(t => {
+      if (!t.participant?.isLocal && t.publication) {
+        const remotePub = t.publication as any;
+        if (typeof remotePub.setSubscribed === 'function' && !remotePub.isSubscribed) {
+          console.log('[ScreenShare] Auto-subscribing to remote screen share track:', t.participant?.identity);
+          remotePub.setSubscribed(true);
+        }
+      }
+    });
+  }, [screenShareTracks]);
 
   // Synchronize local screen sharing track state with system/UI
   useEffect(() => {
@@ -1180,15 +1216,15 @@ export const MeetingRoomContent: React.FC<{
           meetingTitle || roomName || 'CloudNews Meeting',
           '通话中 · 麦克风与音频已保持开启 / Meeting active · Mic & audio running'
         );
-        if (localParticipant && !isMicMuted) {
+        if (localParticipant && !isMicMuted && !localParticipant.isMicrophoneEnabled) {
           console.log('[AppState] Ensuring microphone track is preserved in background');
           localParticipant.setMicrophoneEnabled(true).catch(err => {
             console.warn('[AppState] Background microphone preserve warning:', err);
           });
         }
       } else if (nextAppState === 'active') {
-        // Returned to foreground, re-verify audio output and mic state
-        if (localParticipant && !isMicMuted) {
+        // Returned to foreground, re-verify audio output and mic state without redundant renegotiation
+        if (localParticipant && !isMicMuted && !localParticipant.isMicrophoneEnabled) {
           localParticipant.setMicrophoneEnabled(true).catch(() => {});
         }
       }
@@ -1889,10 +1925,9 @@ export const MeetingRoomContent: React.FC<{
             contentHint: 'detail',
           },
           {
-            videoCodec: 'h264',
             simulcast: false,
             screenShareEncoding: {
-              maxBitrate: 6_000_000,
+              maxBitrate: 3_000_000,
               maxFramerate: 30,
             },
             degradationPreference: 'maintain-resolution',
@@ -1901,7 +1936,7 @@ export const MeetingRoomContent: React.FC<{
         setIsScreenSharing(true);
 
         // Guarantee that local microphone track is NOT disposed or unpublished, and coexists with screen share
-        if (micShouldBeActive) {
+        if (micShouldBeActive && !localParticipant.isMicrophoneEnabled) {
           console.log('[ScreenShare] Preserving active microphone track coexisting with screen share');
           try {
             await localParticipant.setMicrophoneEnabled(true);
@@ -1914,7 +1949,7 @@ export const MeetingRoomContent: React.FC<{
         setIsScreenSharing(false);
 
         // Re-verify microphone track state after stopping screen share
-        if (!isMicMuted) {
+        if (!isMicMuted && !localParticipant.isMicrophoneEnabled) {
           try {
             await localParticipant.setMicrophoneEnabled(true);
           } catch (micErr) {
@@ -3626,6 +3661,18 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 15,
     fontFamily: 'PlusJakartaSans-Bold',
+  },
+  screenShareLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#050B14',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  screenShareLoadingText: {
+    color: '#94a3b8',
+    fontSize: 14,
+    fontFamily: 'PlusJakartaSans-Medium',
   },
   floatingScreenShareBanner: {
     position: 'absolute',
