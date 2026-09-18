@@ -75,11 +75,6 @@ class MainActivity : ReactActivity() {
     * If meeting is active without screen share, enter PiP instead of closing.
     */
   override fun invokeDefaultOnBackPressed() {
-      if (PictureInPictureModule.canEnterPip()) {
-          val entered = PictureInPictureModule.enterPipMode(this)
-          if (entered) return
-      }
-
       if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
           if (!moveTaskToBack(false)) {
               // For non-root activities, use the default implementation to finish them.

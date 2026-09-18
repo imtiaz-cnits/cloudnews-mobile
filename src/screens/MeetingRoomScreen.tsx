@@ -102,7 +102,7 @@ import {
 } from '../utils/wakeLock';
 import { startAudioSession, stopAudioSession } from '../services/livekit';
 import { MediaPreviewModal, MediaPreviewItem, sanitizeMediaUrl } from '../components/meeting/MediaPreviewModal';
-import { enterPictureInPicture, setPipConfig, prepareScreenShare, addPipListener } from '../utils/pip';
+import { setPipConfig, prepareScreenShare, addPipListener } from '../utils/pip';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -1317,38 +1317,29 @@ export const MeetingRoomContent: React.FC<{
   // When in meeting and screen share is OFF -> PiP enabled (auto-enter on minimize / swipe home).
   // When screen share is ON -> PiP disabled so user can present other apps.
   useEffect(() => {
-    setPipConfig(true, isScreenShareActive);
+    // When meeting is minimized in-app (showing App's Home Screen), disable native PiP
+    // Native PiP is enabled only when full-screen meeting is active and screen share is off
+    setPipConfig(!isMinimized, isScreenShareActive);
     return () => {
       setPipConfig(false, false);
     };
-  }, [isScreenShareActive]);
+  }, [isMinimized, isScreenShareActive]);
 
-  // Intercept hardware/system back button to enter native Android Picture-in-Picture mode
+  // Intercept hardware/system back button to minimize meeting in-app and return to the App's Home Screen
   useEffect(() => {
     if (isMinimized) return;
 
     const backAction = () => {
-      // 1. If screen share is active, do NOT enter PiP
-      if (isScreenShareActive) {
-        if (onMinimize) {
-          onMinimize();
-          return true;
-        }
-        return false;
+      if (onMinimize) {
+        onMinimize();
+        return true;
       }
-
-      // 2. If screen share is NOT active, enter native Android Picture-in-Picture mode
-      enterPictureInPicture().then(entered => {
-        if (!entered && onMinimize) {
-          onMinimize();
-        }
-      });
-      return true;
+      return false;
     };
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [isMinimized, onMinimize, isScreenShareActive]);
+  }, [isMinimized, onMinimize]);
 
   // Auto-subscribe to remote screen share tracks as soon as they are announced
   useEffect(() => {
@@ -2657,18 +2648,12 @@ export const MeetingRoomContent: React.FC<{
               </TouchableOpacity>
             )}
 
-            {/* Back arrow to enter PiP (or minimize if screen sharing) */}
+            {/* Back arrow to minimize meeting inside app to App Home Screen */}
             <TouchableOpacity
               style={styles.headerIconBtn}
               onPress={() => {
                 resetControlsTimer();
-                if (!isScreenShareActive) {
-                  enterPictureInPicture().then(entered => {
-                    if (!entered && onMinimize) {
-                      onMinimize();
-                    }
-                  });
-                } else if (onMinimize) {
+                if (onMinimize) {
                   onMinimize();
                 }
               }}
