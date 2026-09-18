@@ -34,7 +34,7 @@ export const DEFAULT_ROOM_OPTIONS: RoomOptions = {
     dtx: true,
     red: true,
     screenShareEncoding: {
-      maxBitrate: 3_000_000,
+      maxBitrate: 4_000_000,
       maxFramerate: 30,
     },
   },

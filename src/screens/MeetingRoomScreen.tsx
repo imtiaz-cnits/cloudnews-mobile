@@ -2790,20 +2790,21 @@ export const MeetingRoomContent: React.FC<{
           }
         }
 
-        // 3. High-definition screen share at 30fps / 3.0Mbps matching LiveKit & GlobalMeetingOverlay standard
+        // 3. Ultra crystal-clear & smooth screen share: 1080p @ 30fps, 4.0Mbps, maintain-resolution
         await localParticipant.setScreenShareEnabled(
           true,
           {
             audio: false,
             contentHint: 'detail',
+            resolution: ScreenSharePresets.h1080fps30.resolution,
           },
           {
             simulcast: false,
             screenShareEncoding: {
-              maxBitrate: 3_000_000,
+              maxBitrate: 4_000_000,
               maxFramerate: 30,
             },
-            degradationPreference: 'balanced',
+            degradationPreference: 'maintain-resolution',
           } as any
         );
 

@@ -213,7 +213,7 @@ export const GlobalMeetingOverlay: React.FC = () => {
       publishDefaults: {
         videoEncoding: videoPreset.encoding,
         screenShareEncoding: {
-          maxBitrate: 3_000_000,
+          maxBitrate: 4_000_000,
           maxFramerate: 30,
         },
         dtx: true,
