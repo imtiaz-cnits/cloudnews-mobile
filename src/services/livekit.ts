@@ -42,7 +42,9 @@ export const DEFAULT_ROOM_OPTIONS: RoomOptions = {
 
 export const DEFAULT_CONNECT_OPTIONS: RoomConnectOptions = {
   autoSubscribe: true,
-  peerConnectionTimeout: 60000,
+  peerConnectionTimeout: 30000,
+  maxRetries: 10,
+  websocketTimeout: 20000,
 };
 
 /**

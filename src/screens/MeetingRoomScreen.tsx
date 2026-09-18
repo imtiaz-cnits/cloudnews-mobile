@@ -873,6 +873,30 @@ export const MeetingRoomContent: React.FC<{
   const { t } = useTranslation();
 
   const [isNativePip, setIsNativePip] = useState<boolean>(false);
+  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+
+  // Subscribe to LiveKit room reconnection lifecycle
+  useEffect(() => {
+    if (!room) return;
+
+    const handleReconnecting = () => {
+      console.log('[MeetingRoomScreen] LiveKit room is reconnecting...');
+      setIsReconnecting(true);
+    };
+
+    const handleReconnected = () => {
+      console.log('[MeetingRoomScreen] LiveKit room reconnected successfully!');
+      setIsReconnecting(false);
+    };
+
+    room.on(RoomEvent.Reconnecting, handleReconnecting);
+    room.on(RoomEvent.Reconnected, handleReconnected);
+
+    return () => {
+      room.off(RoomEvent.Reconnecting, handleReconnecting);
+      room.off(RoomEvent.Reconnected, handleReconnected);
+    };
+  }, [room]);
 
   // Subscribe to native Android Picture-in-Picture mode changes
   useEffect(() => {
@@ -2187,7 +2211,7 @@ export const MeetingRoomContent: React.FC<{
     }
   };
 
-  if (room.state === ConnectionState.Connecting || room.state === ConnectionState.Reconnecting) {
+  if (room.state === ConnectionState.Connecting) {
     return (
       <View style={styles.loadingOverlay}>
         <ActivityIndicator color="#00A8FF" size="large" />
@@ -2412,6 +2436,16 @@ export const MeetingRoomContent: React.FC<{
               <Text style={styles.admissionAdmitText}>{t('meeting.admit')}</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      )}
+
+      {/* --- RECONNECTING STATUS BADGE --- */}
+      {(isReconnecting || room.state === ConnectionState.Reconnecting) && (
+        <View style={[styles.reconnectingPill, { top: insets.top + 54 }]}>
+          <ActivityIndicator size="small" color="#00A8FF" />
+          <Text style={styles.reconnectingPillText}>
+            {t('meeting.reconnecting') || 'Reconnecting...'}
+          </Text>
         </View>
       )}
 
@@ -3458,7 +3492,7 @@ export const MeetingRoomContent: React.FC<{
 export const MeetingRoomScreen: React.FC = () => {
   const navigation = useNavigation<RootStackNavigationProp<'MeetingRoom'>>();
   const route = useRoute<RootStackRouteProp<'MeetingRoom'>>();
-  const { startMeeting } = useMeeting();
+  const { activeMeeting, startMeeting } = useMeeting();
 
   const {
     roomName,
@@ -3475,6 +3509,13 @@ export const MeetingRoomScreen: React.FC = () => {
 
   useEffect(() => {
     if (token && serverUrl && roomName) {
+      if (
+        activeMeeting?.roomName === roomName &&
+        activeMeeting?.token === token
+      ) {
+        navigation.navigate('Home');
+        return;
+      }
       startMeeting({
         roomName,
         token,
@@ -3502,6 +3543,7 @@ export const MeetingRoomScreen: React.FC = () => {
     muteVideo,
     startMeeting,
     navigation,
+    activeMeeting,
   ]);
 
   return (
@@ -3513,6 +3555,26 @@ export const MeetingRoomScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#050B14', alignItems: 'center', justifyContent: 'center' },
+  reconnectingPill: {
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(11, 23, 40, 0.95)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 168, 255, 0.4)',
+    zIndex: 9999,
+    elevation: 8,
+  },
+  reconnectingPillText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontFamily: 'PlusJakartaSans-Bold',
+  },
   contentContainer: { flex: 1, width: '100%', backgroundColor: '#050B14' },
   loadingOverlay: { flex: 1, backgroundColor: '#050B14', alignItems: 'center', justifyContent: 'center', gap: 15 },
   loadingText: { color: '#FFF', fontSize: 16, fontFamily: 'PlusJakartaSans-Bold' },

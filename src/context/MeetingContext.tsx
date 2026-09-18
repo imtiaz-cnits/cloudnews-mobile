@@ -32,7 +32,16 @@ export const MeetingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [isMinimized, setIsMinimized] = useState<boolean>(false);
 
   const startMeeting = useCallback((session: MeetingSession) => {
-    setActiveMeeting(session);
+    setActiveMeeting(prev => {
+      if (
+        prev &&
+        prev.roomName === session.roomName &&
+        prev.token === session.token
+      ) {
+        return prev;
+      }
+      return session;
+    });
     setIsMinimized(false);
     startMeetingForegroundService(session.meetingTitle || session.roomName);
   }, []);

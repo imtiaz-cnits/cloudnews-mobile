@@ -108,6 +108,7 @@
   },
   "meeting": {
     "connecting": "Connecting to meeting room...",
+    "reconnecting": "Reconnecting to meeting...",
     "waiting": "Waiting for participants...",
     "leave": "Leave",
     "endCall": "End Call",
