@@ -1034,7 +1034,6 @@ export const MeetingRoomContent: React.FC<{
 
   const [chatInput, setChatInput] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [showAttachSheet, setShowAttachSheet] = useState(false);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
@@ -1684,17 +1683,10 @@ export const MeetingRoomContent: React.FC<{
     }
   }, [chatInput, localParticipant, room, isHost]);
 
-  const handlePickAndSendAttachment = useCallback(async (category: 'image' | 'video' | 'audio' | 'document') => {
-    setShowAttachSheet(false);
+  const handlePickAndSendAttachment = useCallback(async () => {
     try {
-      let typeFilter = '*/*';
-      if (category === 'image') typeFilter = 'image/*';
-      else if (category === 'video') typeFilter = 'video/*';
-      else if (category === 'audio') typeFilter = 'audio/*';
-      else if (category === 'document') typeFilter = 'application/*';
-
       const result = await DocumentPicker.getDocumentAsync({
-        type: typeFilter,
+        type: ['*/*'],
         copyToCacheDirectory: true,
       });
 
@@ -1720,7 +1712,20 @@ export const MeetingRoomContent: React.FC<{
         return;
       }
 
-      const title = file.name || 'Attachment';
+      const fileName = file.name || 'Attachment';
+      const mime = (file.mimeType || '').toLowerCase();
+      const ext = fileName.split('.').pop()?.toLowerCase() || '';
+
+      let category: 'image' | 'video' | 'audio' | 'document' = 'document';
+      if (mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) {
+        category = 'image';
+      } else if (mime.startsWith('video/') || ['mp4', 'mov', 'avi', 'mkv', 'webm', '3gp'].includes(ext)) {
+        category = 'video';
+      } else if (mime.startsWith('audio/') || ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'].includes(ext)) {
+        category = 'audio';
+      }
+
+      const title = fileName;
       const resolvedSize = validation.sizeFormatted || '1.5 MB';
       const defaultDuration = category === 'audio' ? '0:35' : category === 'video' ? '01:20' : undefined;
       const senderName = activeParticipant.name || (isHost ? 'Host' : 'You');
@@ -1738,7 +1743,7 @@ export const MeetingRoomContent: React.FC<{
           {
             uri: file.uri,
             name: file.name || 'file',
-            type: file.mimeType || typeFilter,
+            type: file.mimeType || '*/*',
           },
           category,
           (progress) => setUploadProgress(progress)
@@ -2752,64 +2757,6 @@ export const MeetingRoomContent: React.FC<{
             )}
           </ScrollView>
 
-          {/* Attachment Options Drawer */}
-          {showAttachSheet && (
-            <View style={styles.attachSheet}>
-              <View style={styles.attachSheetHeader}>
-                <Text style={styles.attachSheetTitle}>Share Attachment</Text>
-                <TouchableOpacity onPress={() => setShowAttachSheet(false)} style={styles.attachSheetClose}>
-                  <X color="#94a3b8" size={16} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.attachGrid}>
-                <TouchableOpacity
-                  style={styles.attachOption}
-                  onPress={() => handlePickAndSendAttachment('image')}
-                  activeOpacity={0.7}
-                >
-                  <View style={[styles.attachOptionIconBox, { backgroundColor: 'rgba(0, 168, 255, 0.15)', borderColor: 'rgba(0, 168, 255, 0.3)' }]}>
-                    <ImageIcon color="#00A8FF" size={22} />
-                  </View>
-                  <Text style={styles.attachOptionLabel}>Image</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.attachOption}
-                  onPress={() => handlePickAndSendAttachment('video')}
-                  activeOpacity={0.7}
-                >
-                  <View style={[styles.attachOptionIconBox, { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.3)' }]}>
-                    <Film color="#10B981" size={22} />
-                  </View>
-                  <Text style={styles.attachOptionLabel}>Video</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.attachOption}
-                  onPress={() => handlePickAndSendAttachment('audio')}
-                  activeOpacity={0.7}
-                >
-                  <View style={[styles.attachOptionIconBox, { backgroundColor: 'rgba(245, 158, 11, 0.15)', borderColor: 'rgba(245, 158, 11, 0.3)' }]}>
-                    <Headphones color="#F59E0B" size={22} />
-                  </View>
-                  <Text style={styles.attachOptionLabel}>Audio</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.attachOption}
-                  onPress={() => handlePickAndSendAttachment('document')}
-                  activeOpacity={0.7}
-                >
-                  <View style={[styles.attachOptionIconBox, { backgroundColor: 'rgba(139, 92, 246, 0.15)', borderColor: 'rgba(139, 92, 246, 0.3)' }]}>
-                    <FileText color="#8B5CF6" size={22} />
-                  </View>
-                  <Text style={styles.attachOptionLabel}>Document</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
           {isUploadingAttachment && (
             <View style={styles.uploadingProgressBanner}>
               <ActivityIndicator size="small" color="#00A8FF" style={{ marginRight: 8 }} />
@@ -2826,10 +2773,11 @@ export const MeetingRoomContent: React.FC<{
             <View style={[styles.chatInputRow, { marginBottom: insets.bottom + 12 }]}>
               <TouchableOpacity
                 style={styles.attachBtn}
-                onPress={() => setShowAttachSheet(prev => !prev)}
+                onPress={handlePickAndSendAttachment}
+                disabled={isUploadingAttachment}
                 activeOpacity={0.7}
               >
-                <Paperclip color={showAttachSheet ? '#00A8FF' : '#94a3b8'} size={19} />
+                <Paperclip color="#00A8FF" size={20} />
               </TouchableOpacity>
               <TextInput
                 style={styles.chatInput}

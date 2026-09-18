@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   Send,
   Plus,
+  Paperclip,
   X,
   Video,
   Image as ImageIcon,
@@ -71,22 +72,14 @@ export const ChatDetailScreen: React.FC = () => {
   const { isDark, colors } = useTheme();
 
   const [input, setInput] = useState('');
-  const [showAttachSheet, setShowAttachSheet] = useState(false);
   const [previewMedia, setPreviewMedia] = useState<MediaPreviewItem | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const [showMeetingModal, setShowMeetingModal] = useState(false);
 
-  const handlePickAndSendAttachment = async (category: 'image' | 'video' | 'audio' | 'document') => {
-    setShowAttachSheet(false);
+  const handlePickAndSendAttachment = async () => {
     try {
-      let typeFilter = '*/*';
-      if (category === 'image') typeFilter = 'image/*';
-      else if (category === 'video') typeFilter = 'video/*';
-      else if (category === 'audio') typeFilter = 'audio/*';
-      else if (category === 'document') typeFilter = 'application/*';
-
       const result = await DocumentPicker.getDocumentAsync({
-        type: typeFilter,
+        type: ['*/*'],
         copyToCacheDirectory: true,
       });
 
@@ -103,7 +96,20 @@ export const ChatDetailScreen: React.FC = () => {
           return;
         }
 
-        const title = file.name || 'Selected File';
+        const fileName = file.name || 'Attachment';
+        const mime = (file.mimeType || '').toLowerCase();
+        const ext = fileName.split('.').pop()?.toLowerCase() || '';
+
+        let category: 'image' | 'video' | 'audio' | 'document' = 'document';
+        if (mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) {
+          category = 'image';
+        } else if (mime.startsWith('video/') || ['mp4', 'mov', 'avi', 'mkv', 'webm', '3gp'].includes(ext)) {
+          category = 'video';
+        } else if (mime.startsWith('audio/') || ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'].includes(ext)) {
+          category = 'audio';
+        }
+
+        const title = fileName;
         const defaultDuration =
           category === 'audio' ? '0:35' : category === 'video' ? '01:20' : undefined;
 
@@ -165,7 +171,6 @@ export const ChatDetailScreen: React.FC = () => {
     const updated = [...messages, newMessage];
     setMessages(updated);
     setInput('');
-    setShowAttachSheet(false);
 
     // Persist real message history
     try {
@@ -538,76 +543,17 @@ export const ChatDetailScreen: React.FC = () => {
       )}
       </ScrollView>
 
-      {/* Attachment Bottom Sheet / Action Drawer */}
-      {showAttachSheet && (
-        <View style={[styles.attachSheet, !isDark && { backgroundColor: colors.modalBg, borderTopColor: colors.border }]}>
-          <View style={styles.attachSheetHeader}>
-            <Text style={[styles.attachSheetTitle, !isDark && { color: colors.textPrimary }]}>Share Attachment</Text>
-            <TouchableOpacity onPress={() => setShowAttachSheet(false)} style={styles.attachSheetClose}>
-              <X color={isDark ? '#94a3b8' : colors.textSecondary} size={18} />
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.attachGrid}>
-            <TouchableOpacity
-              style={styles.attachOption}
-              onPress={() => handlePickAndSendAttachment('image')}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.attachOptionIconBox, { backgroundColor: 'rgba(0, 168, 255, 0.15)', borderColor: 'rgba(0, 168, 255, 0.3)' }]}>
-                <ImageIcon color="#00A8FF" size={24} />
-              </View>
-              <Text style={[styles.attachOptionLabel, !isDark && { color: colors.textSecondary }]}>Image</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.attachOption}
-              onPress={() => handlePickAndSendAttachment('video')}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.attachOptionIconBox, { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.3)' }]}>
-                <Film color="#10B981" size={24} />
-              </View>
-              <Text style={[styles.attachOptionLabel, !isDark && { color: colors.textSecondary }]}>Video</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.attachOption}
-              onPress={() => handlePickAndSendAttachment('audio')}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.attachOptionIconBox, { backgroundColor: 'rgba(245, 158, 11, 0.15)', borderColor: 'rgba(245, 158, 11, 0.3)' }]}>
-                <Headphones color="#F59E0B" size={24} />
-              </View>
-              <Text style={[styles.attachOptionLabel, !isDark && { color: colors.textSecondary }]}>Audio</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.attachOption}
-              onPress={() => handlePickAndSendAttachment('document')}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.attachOptionIconBox, { backgroundColor: 'rgba(139, 92, 246, 0.15)', borderColor: 'rgba(139, 92, 246, 0.3)' }]}>
-                <FileText color="#8B5CF6" size={24} />
-              </View>
-              <Text style={[styles.attachOptionLabel, !isDark && { color: colors.textSecondary }]}>Document</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
       {/* Input Row */}
       <View style={[styles.inputRow, { paddingBottom: insets.bottom + 10 }, !isDark && { backgroundColor: colors.card, borderTopColor: colors.border }]}>
-        {/* Attachment '+' button placed outside the typing box */}
+        {/* Attachment Paperclip button placed outside the typing box */}
         <TouchableOpacity
           style={[styles.attachBtnOutside, !isDark && { backgroundColor: colors.cardSubtle }]}
-          onPress={() => setShowAttachSheet(prev => !prev)}
+          onPress={handlePickAndSendAttachment}
           activeOpacity={0.7}
         >
-          <Plus
-            color={showAttachSheet ? colors.primary : (isDark ? '#94a3b8' : colors.textSecondary)}
+          <Paperclip
+            color={colors.primary}
             size={22}
-            style={{ transform: [{ rotate: showAttachSheet ? '45deg' : '0deg' }] }}
           />
         </TouchableOpacity>
 
