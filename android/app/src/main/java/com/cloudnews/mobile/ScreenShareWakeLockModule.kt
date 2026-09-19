@@ -82,8 +82,16 @@ class ScreenShareWakeLockModule(reactContext: ReactApplicationContext) : ReactCo
 
     @ReactMethod
     fun releaseWakeLock() {
-        currentActivity?.runOnUiThread {
-            currentActivity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        try {
+            currentActivity?.runOnUiThread {
+                try {
+                    currentActivity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } catch (e: Exception) {
+                    // Ignore window flags cleanup if activity is tearing down
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
         try {
             if (wakeLock?.isHeld == true) {

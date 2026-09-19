@@ -167,6 +167,16 @@ export const GlobalMeetingOverlay: React.FC = () => {
   // Resilient disconnect handling: Only end meeting on explicit leave or room teardown
   const handleDisconnected = useCallback((reason?: DisconnectReason) => {
     console.log('[GlobalMeetingOverlay] Room disconnected event with reason:', reason);
+
+    // Host Absolute Immunity Guard: The host must NEVER be auto-ejected from their own meeting!
+    // Disconnection reasons like CLIENT_INITIATED (caused by track unpublish / OS screen share stop),
+    // transient socket issues, or renegotiation glitches must NEVER call endMeeting() for the host.
+    // The host can only leave/end by explicitly pressing "End Meeting" in the UI.
+    if (activeMeeting?.isHost) {
+      console.log('[GlobalMeetingOverlay] Host session preserved despite disconnect event; keeping session intact for host.');
+      return;
+    }
+
     if (
       reason === DisconnectReason.CLIENT_INITIATED ||
       reason === DisconnectReason.ROOM_DELETED ||
@@ -174,7 +184,7 @@ export const GlobalMeetingOverlay: React.FC = () => {
       reason === DisconnectReason.PARTICIPANT_REMOVED ||
       reason === DisconnectReason.USER_REJECTED
     ) {
-      if (reason === DisconnectReason.PARTICIPANT_REMOVED && !activeMeeting?.isHost) {
+      if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
         Alert.alert(
           'Removed from Meeting',
           'You have been removed from the meeting by the host.',

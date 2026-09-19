@@ -90,7 +90,9 @@ class MainActivity : ReactActivity() {
 
   override fun onDestroy() {
       try {
-          MeetingForegroundService.stopService(this)
+          if (isFinishing) {
+              MeetingForegroundService.stopService(this)
+          }
       } catch (e: Exception) {
           e.printStackTrace()
       }

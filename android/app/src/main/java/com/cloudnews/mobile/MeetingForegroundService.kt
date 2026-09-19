@@ -123,7 +123,7 @@ class MeetingForegroundService : Service() {
                                 text.contains("sharing your screen", ignoreCase = true) ||
                                 text.contains("正在共享屏幕", ignoreCase = true)
 
-                        if (isMediaProjectionChannel || isScreenShareText) {
+                        if ((isMediaProjectionChannel || isScreenShareText) && sbn.id != NOTIFICATION_ID) {
                             notificationManager.cancel(sbn.tag, sbn.id)
                         }
                     }
@@ -148,7 +148,7 @@ class MeetingForegroundService : Service() {
         createNotificationChannel()
 
         val launchIntent = Intent(this, MainActivity::class.java).apply {
-            this.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            this.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
         }
 
         val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

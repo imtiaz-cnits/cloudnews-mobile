@@ -1460,6 +1460,14 @@ export const MeetingRoomContent: React.FC<{
   const remoteParticipants = useParticipants();
   const { localParticipant } = useLocalParticipant();
 
+  // Track whether remote participants have ever joined this meeting
+  const hadRemoteParticipantsRef = useRef(false);
+  useEffect(() => {
+    if (remoteParticipants.length > 0) {
+      hadRemoteParticipantsRef.current = true;
+    }
+  }, [remoteParticipants.length]);
+
   const activeScreenShare = useMemo(() => {
     // 1. Remote screen share: any remote participant with a screen share publication
     const remoteShare = screenShareTracks.find(
@@ -2958,9 +2966,24 @@ export const MeetingRoomContent: React.FC<{
 
         const screenDim = Dimensions.get('screen');
         const isPortrait = screenDim.height >= screenDim.width;
-        // Standard mobile resolution aligned to 16-pixel macroblocks for Qualcomm / HiSilicon / MediaTek hardware encoders
-        const targetWidth = isPortrait ? 1080 : 1920;
-        const targetHeight = isPortrait ? 1920 : 1080;
+        const androidVersion =
+          Platform.OS === 'android'
+            ? typeof Platform.Version === 'number'
+              ? Platform.Version
+              : parseInt(String(Platform.Version), 10) || 30
+            : 30;
+        const isLegacyAndroid = Platform.OS === 'android' && androidVersion <= 29;
+
+        // Device-adaptive resolution & bitrate configuration:
+        // On Android 9/10 (EMUI 10 / MIUI 11-12 / Older chipsets):
+        // 720p HD (720x1280 portrait / 1280x720 landscape) aligned to 16-pixel macroblocks at 2.5 Mbps
+        // completely eliminates hardware encoder overload, initial flickering, lag, and black screen.
+        // On Android 11+ and iOS:
+        // 1080p Full HD (1080x1920 portrait / 1920x1080 landscape) at 4.0 Mbps with 30fps.
+        const targetWidth = isLegacyAndroid ? (isPortrait ? 720 : 1280) : (isPortrait ? 1080 : 1920);
+        const targetHeight = isLegacyAndroid ? (isPortrait ? 1280 : 720) : (isPortrait ? 1920 : 1080);
+        const targetBitrate = isLegacyAndroid ? 2_500_000 : 4_000_000;
+        const targetFps = isLegacyAndroid ? 25 : 30;
 
         // Dedicated try-catch to silently catch user cancellation on iOS ReplayKit and Android MediaProjection
         try {
@@ -2972,7 +2995,7 @@ export const MeetingRoomContent: React.FC<{
               resolution: {
                 width: targetWidth,
                 height: targetHeight,
-                frameRate: 30,
+                frameRate: targetFps,
               },
             },
             {
@@ -2980,8 +3003,8 @@ export const MeetingRoomContent: React.FC<{
               videoCodec: 'h264',
               backupCodec: { codec: 'vp8' },
               screenShareEncoding: {
-                maxBitrate: 4_000_000,
-                maxFramerate: 30,
+                maxBitrate: targetBitrate,
+                maxFramerate: targetFps,
               },
               degradationPreference: 'maintain-resolution',
             } as any
@@ -3021,8 +3044,8 @@ export const MeetingRoomContent: React.FC<{
         setIsScreenSharing(true);
         setPipConfig(true, true);
 
-        // Small delay to allow MediaProjection track to stabilize before touching mic to prevent WebRTC track conflict
-        await new Promise(resolve => setTimeout(resolve, 350));
+        // Stabilization delay to allow MediaProjection track and hardware encoder to produce initial keyframe smoothly
+        await new Promise(resolve => setTimeout(resolve, 450));
 
         // Guarantee that local microphone track is NOT disposed or unpublished, and coexists with screen share
         if (micShouldBeActive && !isMicMutedRef.current && !localParticipant.isMicrophoneEnabled) {
@@ -3093,7 +3116,14 @@ export const MeetingRoomContent: React.FC<{
 
   // Automatically stop screen sharing if all other participants leave the meeting
   useEffect(() => {
-    if (isScreenSharing && !isScreenShareTogglingRef.current && allParticipants.length <= 1 && localParticipant) {
+    if (
+      isScreenSharing &&
+      !isScreenShareTogglingRef.current &&
+      !isStartingScreenShareRef.current &&
+      hadRemoteParticipantsRef.current &&
+      remoteParticipants.length === 0 &&
+      localParticipant
+    ) {
       prepareScreenShare(false);
       setPipConfig(true, false);
       localParticipant.setScreenShareEnabled(false).catch(err => {
@@ -3102,7 +3132,6 @@ export const MeetingRoomContent: React.FC<{
         releaseScreenShareWakeLock();
       });
       setIsScreenSharing(false);
-      releaseScreenShareWakeLock();
       if (!isMicMutedRef.current) {
         localParticipant.setMicrophoneEnabled(true).catch(() => {});
       }
@@ -3111,7 +3140,7 @@ export const MeetingRoomContent: React.FC<{
         t('meeting.screenShareStoppedDesc')
       );
     }
-  }, [allParticipants.length, isScreenSharing, localParticipant, isMicMuted, t]);
+  }, [remoteParticipants.length, isScreenSharing, localParticipant, t]);
 
   // Keep phone screen awake while screen sharing is active
   useEffect(() => {
