@@ -34,7 +34,8 @@
         ],
         "NSCameraUsageDescription": "Cloud News requires camera access for real-time video meetings.",
         "NSMicrophoneUsageDescription": "Cloud News requires microphone access for meeting audio communication.",
-        "UIViewControllerBasedStatusBarAppearance": false
+        "UIViewControllerBasedStatusBarAppearance": false,
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {

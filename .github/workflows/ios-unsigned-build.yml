@@ -1,0 +1,75 @@
+name: Build Unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build Unsigned iOS IPA
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Determine Project Directory
+        run: |
+          if [ -d "cloudnews-mobile" ]; then
+            echo "PROJECT_DIR=cloudnews-mobile" >> $GITHUB_ENV
+          else
+            echo "PROJECT_DIR=." >> $GITHUB_ENV
+          fi
+
+      - name: Install dependencies
+        run: |
+          cd $PROJECT_DIR
+          npm ci || npm install --legacy-peer-deps
+
+      - name: Run Expo Prebuild (Generate Native iOS Project)
+        run: |
+          cd $PROJECT_DIR
+          npx expo prebuild --platform ios --clean
+
+      - name: Install CocoaPods
+        run: |
+          cd $PROJECT_DIR/ios
+          pod install
+
+      - name: Compile iOS Release Binary (Unsigned)
+        run: |
+          cd $PROJECT_DIR/ios
+          WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
+          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag{gsub(/^[ \t]+/, ""); print; exit}')
+          echo "Building Scheme: $SCHEME in Workspace: $WORKSPACE"
+          xcodebuild -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath ../build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build
+          cd ..
+
+      - name: Package .app into Unsigned .ipa
+        run: |
+          cd $PROJECT_DIR
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/*.app Payload/
+          zip -r -q CloudNews-unsigned.ipa Payload
+          ls -lh CloudNews-unsigned.ipa
+
+      - name: Upload Unsigned .ipa Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CloudNews-unsigned.ipa
+          path: ${{ env.PROJECT_DIR }}/CloudNews-unsigned.ipa
+          if-no-files-found: error
