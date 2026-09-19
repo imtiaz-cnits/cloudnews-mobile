@@ -14,7 +14,6 @@ import {
   Participant,
   RoomEvent,
   ParticipantEvent,
-  ScreenSharePresets,
   DataPacket_Kind,
   facingModeFromLocalTrack,
 } from 'livekit-client';
@@ -2950,7 +2949,7 @@ export const MeetingRoomContent: React.FC<{
           }
         }
 
-        // 3. Ultra crystal-clear & smooth screen share: 1080p @ 30fps, 4.0Mbps, maintain-resolution
+        // 3. Mobile-optimized crystal-clear screen share: native mobile aspect ratio, 1080p, 2.5 Mbps, 24fps
         // Dedicated try-catch to silently catch user cancellation on iOS ReplayKit and Android MediaProjection
         try {
           await localParticipant.setScreenShareEnabled(
@@ -2958,15 +2957,14 @@ export const MeetingRoomContent: React.FC<{
             {
               audio: false,
               contentHint: 'detail',
-              resolution: ScreenSharePresets.h1080fps30.resolution,
             },
             {
               simulcast: false,
               screenShareEncoding: {
-                maxBitrate: 4_000_000,
-                maxFramerate: 30,
+                maxBitrate: 2_500_000,
+                maxFramerate: 24,
               },
-              degradationPreference: 'maintain-resolution',
+              degradationPreference: 'balanced',
             } as any
           );
         } catch (shareErr: any) {
