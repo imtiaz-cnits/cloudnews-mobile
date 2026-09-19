@@ -26,6 +26,7 @@ import {
   MessageSquare,
   Mic,
   MicOff,
+  Monitor,
   MonitorUp,
   MonitorOff,
   StopCircle,
@@ -625,7 +626,7 @@ const ScreenShareView: React.FC<{
               colors={['#00A8FF', '#0066CC']}
               style={styles.screenSharePresenterIconCircle}
             >
-              <MonitorUp color="#FFF" size={44} />
+              <Monitor color="#FFF" size={44} />
             </LinearGradient>
           </View>
 
@@ -1251,6 +1252,7 @@ export const MeetingRoomContent: React.FC<{
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isScreenShareToggling, setIsScreenShareToggling] = useState(false);
   const isScreenShareTogglingRef = useRef(false);
+  const isStartingScreenShareRef = useRef(false);
   const screenCapturePickerRef = useRef<any>(null);
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
 
@@ -1486,8 +1488,8 @@ export const MeetingRoomContent: React.FC<{
 
   // Determine if any screen share (local or remote) is currently active
   const isScreenShareActive = useMemo(() => {
-    return Boolean(isScreenSharing || activeScreenShare);
-  }, [isScreenSharing, activeScreenShare]);
+    return Boolean(isScreenSharing || activeScreenShare || isStartingScreenShareRef.current);
+  }, [isScreenSharing, activeScreenShare, isScreenShareToggling]);
 
   // Automatically switch layout to full screen when host or guest screen shares
   useEffect(() => {
@@ -2905,8 +2907,8 @@ export const MeetingRoomContent: React.FC<{
 
   const handleToggleScreenShare = async () => {
     if (!localParticipant) return;
-    if (isScreenShareTogglingRef.current) {
-      console.log('[ScreenShare] Toggle already in progress, ignoring duplicate call');
+    if (isScreenShareTogglingRef.current || isStartingScreenShareRef.current) {
+      console.log('[ScreenShare] Toggle or start already in progress, ignoring duplicate call');
       return;
     }
 
@@ -2925,7 +2927,8 @@ export const MeetingRoomContent: React.FC<{
     const nextSharing = !isScreenSharing;
     try {
       if (nextSharing) {
-        // 1. Immediately disable PiP auto-enter so Android 12+ does not trigger PiP when system dialog appears
+        // 1. Immediately disable Android OS PiP auto-enter before calling LiveKit so Android 14/15 system dialog does not trigger PiP
+        isStartingScreenShareRef.current = true;
         prepareScreenShare(true);
 
         // Record current microphone state before screen share starts
@@ -2948,23 +2951,56 @@ export const MeetingRoomContent: React.FC<{
         }
 
         // 3. Ultra crystal-clear & smooth screen share: 1080p @ 30fps, 4.0Mbps, maintain-resolution
-        await localParticipant.setScreenShareEnabled(
-          true,
-          {
-            audio: false,
-            contentHint: 'detail',
-            resolution: ScreenSharePresets.h1080fps30.resolution,
-          },
-          {
-            simulcast: false,
-            screenShareEncoding: {
-              maxBitrate: 4_000_000,
-              maxFramerate: 30,
+        // Dedicated try-catch to silently catch user cancellation on iOS ReplayKit and Android MediaProjection
+        try {
+          await localParticipant.setScreenShareEnabled(
+            true,
+            {
+              audio: false,
+              contentHint: 'detail',
+              resolution: ScreenSharePresets.h1080fps30.resolution,
             },
-            degradationPreference: 'maintain-resolution',
-          } as any
-        );
+            {
+              simulcast: false,
+              screenShareEncoding: {
+                maxBitrate: 4_000_000,
+                maxFramerate: 30,
+              },
+              degradationPreference: 'maintain-resolution',
+            } as any
+          );
+        } catch (shareErr: any) {
+          const errMsg = (shareErr?.message || shareErr?.name || String(shareErr) || '').toLowerCase();
+          console.warn('[ScreenShare] setScreenShareEnabled catch:', errMsg);
 
+          // Silently handle user cancellation on both iOS (ReplayKit cancel) and Android (MediaProjection cancel)
+          const isCancelled =
+            errMsg.includes('cancel') ||
+            errMsg.includes('reject') ||
+            errMsg.includes('abort') ||
+            errMsg.includes('notallowed') ||
+            errMsg.includes('result_canceled') ||
+            errMsg.includes('broadcast') ||
+            errMsg.includes('user cancelled') ||
+            errMsg.includes('user denied');
+
+          isStartingScreenShareRef.current = false;
+          prepareScreenShare(false);
+          setPipConfig(true, false);
+          setIsScreenSharing(false);
+          releaseScreenShareWakeLock();
+
+          if (!isCancelled) {
+            const platformName = Platform.OS === 'ios' ? 'iOS / iPhone' : 'Android';
+            Alert.alert(
+              'Screen Share Notice',
+              `Could not share screen. Please allow screen recording/casting when prompted by ${platformName}.`
+            );
+          }
+          return;
+        }
+
+        isStartingScreenShareRef.current = false;
         setIsScreenSharing(true);
         setPipConfig(true, true);
 
@@ -2981,6 +3017,7 @@ export const MeetingRoomContent: React.FC<{
           }
         }
       } else {
+        isStartingScreenShareRef.current = false;
         prepareScreenShare(false);
         try {
           await localParticipant.setScreenShareEnabled(false);
@@ -3003,6 +3040,7 @@ export const MeetingRoomContent: React.FC<{
       }
     } catch (e: any) {
       console.error('[ScreenShare] Error:', e);
+      isStartingScreenShareRef.current = false;
       prepareScreenShare(false);
       setPipConfig(true, false);
       setIsScreenSharing(false);
@@ -3027,6 +3065,7 @@ export const MeetingRoomContent: React.FC<{
         `Could not share screen. Please allow screen recording/casting when prompted by ${platformName}.`
       );
     } finally {
+      isStartingScreenShareRef.current = false;
       // Release toggle lock with buffer to debounce double-taps
       setTimeout(() => {
         isScreenShareTogglingRef.current = false;
@@ -3651,26 +3690,61 @@ export const MeetingRoomContent: React.FC<{
               onPress={handleScreenTap}
             >
               {activeScreenShare && (
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  style={[
-                    styles.participantCard,
-                    styles.gridScreenShareCard,
-                    {
-                      width: gridLayout.cols === 1 ? gridLayout.cardWidth : '100%',
-                      height: Math.min(220, Math.floor(gridLayout.cardHeight * 1.3)),
-                    },
-                  ]}
-                  onPress={() => setIsGridMode(false)}
-                >
-                  <VideoTrack trackRef={activeScreenShare as any} style={styles.cardVideo} objectFit="contain" />
-                  <View style={styles.gridScreenShareBadge}>
-                    <MonitorUp color="#00A8FF" size={14} />
-                    <Text style={styles.gridScreenShareText}>
-                      {activeScreenShare.participant?.name || 'Screen Share'} (Tap for Full Screen)
-                    </Text>
-                  </View>
-                </TouchableOpacity>
+                (() => {
+                  const isLocalScreenShare = Boolean(
+                    isScreenSharing ||
+                    activeScreenShare.participant?.isLocal ||
+                    (localParticipant && activeScreenShare.participant?.identity === localParticipant.identity)
+                  );
+
+                  return (
+                    <TouchableOpacity
+                      activeOpacity={0.9}
+                      style={[
+                        styles.participantCard,
+                        styles.gridScreenShareCard,
+                        {
+                          width: gridLayout.cols === 1 ? gridLayout.cardWidth : '100%',
+                          height: Math.min(220, Math.floor(gridLayout.cardHeight * 1.3)),
+                        },
+                      ]}
+                      onPress={() => setIsGridMode(false)}
+                    >
+                      {isLocalScreenShare ? (
+                        <View style={styles.gridScreenShareLocalPlaceholder}>
+                          <LinearGradient
+                            colors={['rgba(0, 168, 255, 0.12)', 'rgba(0, 60, 140, 0.28)']}
+                            style={StyleSheet.absoluteFill}
+                          />
+                          <View style={styles.gridScreenShareIconBadge}>
+                            <Monitor color="#00A8FF" size={24} />
+                          </View>
+                          <Text style={styles.gridScreenShareLocalTitle} numberOfLines={1}>
+                            You are sharing your screen
+                          </Text>
+                          <Text style={styles.gridScreenShareLocalSubtitle} numberOfLines={1}>
+                            Participants can see your screen in 1080p
+                          </Text>
+                          <View style={styles.gridScreenShareTapHint}>
+                            <Text style={styles.gridScreenShareTapHintText}>
+                              Tap for Full Screen
+                            </Text>
+                          </View>
+                        </View>
+                      ) : (
+                        <>
+                          <VideoTrack trackRef={activeScreenShare as any} style={styles.cardVideo} objectFit="contain" />
+                          <View style={styles.gridScreenShareBadge}>
+                            <MonitorUp color="#00A8FF" size={14} />
+                            <Text style={styles.gridScreenShareText}>
+                              {activeScreenShare.participant?.name || 'Screen Share'} (Tap for Full Screen)
+                            </Text>
+                          </View>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })()
               )}
               {activeMeetingParticipants.map((p) => (
                 <ParticipantCard
@@ -4849,6 +4923,58 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 11,
     fontFamily: 'PlusJakartaSans-SemiBold',
+  },
+  gridScreenShareLocalPlaceholder: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#070d18',
+  },
+  gridScreenShareIconBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 168, 255, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 168, 255, 0.4)',
+  },
+  gridScreenShareLocalTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontFamily: 'PlusJakartaSans-Bold',
+    lineHeight: 18,
+    textAlign: 'center',
+    marginBottom: 3,
+  },
+  gridScreenShareLocalSubtitle: {
+    color: '#94a3b8',
+    fontSize: 10.5,
+    fontFamily: 'PlusJakartaSans-Medium',
+    lineHeight: 15,
+    textAlign: 'center',
+    marginBottom: 8,
+    paddingBottom: 2,
+  },
+  gridScreenShareTapHint: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 10,
+    paddingVertical: 3.5,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+  },
+  gridScreenShareTapHintText: {
+    color: '#38bdf8',
+    fontSize: 10,
+    fontFamily: 'PlusJakartaSans-SemiBold',
+    lineHeight: 14,
+    paddingBottom: 1,
   },
   cardOverlay: { ...StyleSheet.absoluteFillObject, paddingHorizontal: 14, justifyContent: 'space-between' },
   cardTopRow: {

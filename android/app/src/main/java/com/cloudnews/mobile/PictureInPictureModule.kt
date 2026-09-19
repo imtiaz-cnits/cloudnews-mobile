@@ -117,9 +117,8 @@ class PictureInPictureModule(reactContext: ReactApplicationContext) : ReactConte
     @ReactMethod
     fun setPipConfig(inMeeting: Boolean, screenSharing: Boolean) {
         isInMeeting = inMeeting
-        isScreenSharing = screenSharing
-        if (!screenSharing) {
-            isScreenSharingStarting = false
+        if (!isScreenSharingStarting) {
+            isScreenSharing = screenSharing
         }
 
         val activity = currentActivity ?: return
@@ -142,9 +141,7 @@ class PictureInPictureModule(reactContext: ReactApplicationContext) : ReactConte
     @ReactMethod
     fun prepareScreenShare(starting: Boolean) {
         isScreenSharingStarting = starting
-        if (starting) {
-            isScreenSharing = true
-        }
+        isScreenSharing = starting
         val activity = currentActivity ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
