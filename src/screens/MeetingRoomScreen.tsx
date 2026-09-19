@@ -2972,7 +2972,7 @@ export const MeetingRoomContent: React.FC<{
               resolution: {
                 width: targetWidth,
                 height: targetHeight,
-                frameRate: 24,
+                frameRate: 30,
               },
             },
             {
@@ -2980,10 +2980,10 @@ export const MeetingRoomContent: React.FC<{
               videoCodec: 'h264',
               backupCodec: { codec: 'vp8' },
               screenShareEncoding: {
-                maxBitrate: 2_500_000,
-                maxFramerate: 24,
+                maxBitrate: 4_000_000,
+                maxFramerate: 30,
               },
-              degradationPreference: 'balanced',
+              degradationPreference: 'maintain-resolution',
             } as any
           );
         } catch (shareErr: any) {

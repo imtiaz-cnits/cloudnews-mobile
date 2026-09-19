@@ -215,8 +215,8 @@ export const GlobalMeetingOverlay: React.FC = () => {
         backupCodec: { codec: 'vp8' },
         videoEncoding: videoPreset.encoding,
         screenShareEncoding: {
-          maxBitrate: 2_500_000,
-          maxFramerate: 24,
+          maxBitrate: 4_000_000,
+          maxFramerate: 30,
         },
         dtx: true,
         red: true,
