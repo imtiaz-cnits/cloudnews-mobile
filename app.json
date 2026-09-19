@@ -17,8 +17,9 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.cloudnews.mobile",
+      "buildNumber": "1",
       "entitlements": {
         "com.apple.security.application-groups": [
           "group.com.cloudnews.mobile"
@@ -29,11 +30,11 @@
         "RTCScreenSharingExtension": "com.cloudnews.mobile.broadcast",
         "UIBackgroundModes": [
           "audio",
-          "voip",
-          "fetch"
+          "voip"
         ],
-        "NSCameraUsageDescription": "CloudNews requires camera access for video conferencing.",
-        "NSMicrophoneUsageDescription": "CloudNews requires microphone access for audio and voice communication."
+        "NSCameraUsageDescription": "Cloud News requires camera access for real-time video meetings.",
+        "NSMicrophoneUsageDescription": "Cloud News requires microphone access for meeting audio communication.",
+        "UIViewControllerBasedStatusBarAppearance": false
       }
     },
     "android": {
@@ -59,7 +60,23 @@
     "plugins": [
       "expo-dev-client",
       "expo-asset",
-      "expo-font",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "./src/assets/fonts/PlusJakartaSans-Regular.ttf",
+            "./src/assets/fonts/PlusJakartaSans-Medium.ttf",
+            "./src/assets/fonts/PlusJakartaSans-SemiBold.ttf",
+            "./src/assets/fonts/PlusJakartaSans-Bold.ttf",
+            "./src/assets/fonts/PlusJakartaSans-ExtraBold.ttf",
+            "./src/assets/fonts/PlusJakartaSans-Light.ttf",
+            "./src/assets/fonts/PlusJakartaSans-Italic.ttf",
+            "./src/assets/fonts/PlusJakartaSans-BoldItalic.ttf",
+            "./src/assets/fonts/PlusJakartaSans-MediumItalic.ttf",
+            "./src/assets/fonts/PlusJakartaSans-SemiBoldItalic.ttf"
+          ]
+        }
+      ],
       "@react-native-community/datetimepicker"
     ]
   }
