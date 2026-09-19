@@ -91,3 +91,17 @@ export function stopMeetingForegroundService(): void {
     }
   }
 }
+
+/**
+ * Triggers system overlay permission prompt if needed on Android (MIUI / Huawei).
+ */
+export function requestOverlayPermission(): void {
+  if (Platform.OS === 'android' && NativeModules.ScreenShareWakeLock?.requestOverlayPermission) {
+    try {
+      NativeModules.ScreenShareWakeLock.requestOverlayPermission();
+    } catch (err) {
+      console.warn('[WakeLock] requestOverlayPermission error:', err);
+    }
+  }
+}
+

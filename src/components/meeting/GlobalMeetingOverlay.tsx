@@ -211,6 +211,8 @@ export const GlobalMeetingOverlay: React.FC = () => {
         resolution: videoPreset.capture,
       },
       publishDefaults: {
+        videoCodec: 'h264',
+        backupCodec: { codec: 'vp8' },
         videoEncoding: videoPreset.encoding,
         screenShareEncoding: {
           maxBitrate: 2_500_000,

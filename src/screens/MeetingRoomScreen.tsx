@@ -115,6 +115,7 @@ import {
   releaseScreenShareWakeLock,
   startMeetingForegroundService,
   stopMeetingForegroundService,
+  requestOverlayPermission,
 } from '../utils/wakeLock';
 import { startAudioSession, stopAudioSession } from '../services/livekit';
 import { MediaPreviewModal, MediaPreviewItem, sanitizeMediaUrl } from '../components/meeting/MediaPreviewModal';
@@ -2949,7 +2950,18 @@ export const MeetingRoomContent: React.FC<{
           }
         }
 
-        // 3. Mobile-optimized crystal-clear screen share: native mobile aspect ratio, 1080p, 2.5 Mbps, 24fps
+        // 3. Mobile-optimized crystal-clear screen share: native mobile portrait aspect ratio, hardware H.264 acceleration
+        // Request overlay permission if needed on Android (MIUI 12 / Huawei) to ensure background capture operates smoothly
+        if (Platform.OS === 'android') {
+          requestOverlayPermission();
+        }
+
+        const screenDim = Dimensions.get('screen');
+        const isPortrait = screenDim.height >= screenDim.width;
+        // Standard mobile resolution aligned to 16-pixel macroblocks for Qualcomm / HiSilicon / MediaTek hardware encoders
+        const targetWidth = isPortrait ? 1080 : 1920;
+        const targetHeight = isPortrait ? 1920 : 1080;
+
         // Dedicated try-catch to silently catch user cancellation on iOS ReplayKit and Android MediaProjection
         try {
           await localParticipant.setScreenShareEnabled(
@@ -2957,9 +2969,16 @@ export const MeetingRoomContent: React.FC<{
             {
               audio: false,
               contentHint: 'detail',
+              resolution: {
+                width: targetWidth,
+                height: targetHeight,
+                frameRate: 24,
+              },
             },
             {
               simulcast: false,
+              videoCodec: 'h264',
+              backupCodec: { codec: 'vp8' },
               screenShareEncoding: {
                 maxBitrate: 2_500_000,
                 maxFramerate: 24,
