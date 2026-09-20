@@ -368,6 +368,7 @@ const ParticipantCard: React.FC<{
           isSingleOrFullScreen
             ? styles.fullScreenCard
             : (isSpeaking && styles.activeSpeakerCard),
+          screenShareTrack?.publication?.track && { backgroundColor: 'transparent' },
           style,
         ]}
       >
@@ -378,6 +379,7 @@ const ParticipantCard: React.FC<{
               style={styles.cardVideo}
               objectFit="contain"
               mirror={false}
+              zOrder={1}
             />
             {/* Bottom translucent name pill so participant name & mic are always visible on video */}
             <View style={[styles.videoNamePill, { bottom: density === 'ultra-compact' ? 5 : 8, left: density === 'ultra-compact' ? 5 : 8 }]}>
@@ -677,7 +679,7 @@ const ScreenShareView: React.FC<{
   const isPresenterHost = checkIsParticipantHost(presenter);
 
   return (
-    <View style={styles.fullScreenCard}>
+    <View style={[styles.fullScreenCard, !isSelf && { backgroundColor: 'transparent' }]}>
       {isSelf ? (
         /* Dedicated Presenter View when local user (Host or Guest) is sharing screen.
            CRITICAL: Do NOT render VideoTrack here to prevent infinite recursive screen mirroring! */
@@ -746,6 +748,7 @@ const ScreenShareView: React.FC<{
             style={styles.cardVideo}
             objectFit="contain"
             mirror={false}
+            zOrder={1}
           />
           {!track?.publication?.track && (
             <View style={[styles.screenShareLoadingOverlay, { zIndex: 0 }]} pointerEvents="none">
@@ -3084,43 +3087,13 @@ export const MeetingRoomContent: React.FC<{
           }
         }
 
-        // 3. Mobile-optimized crystal-clear 1080p Full HD screen share:
-        // 1080x1920 portrait / 1920x1080 landscape @ 15fps, 3.0 Mbps bitrate, contentHint: 'detail'
-        const screenDim = Dimensions.get('screen');
-        const isPortrait = screenDim.height >= screenDim.width;
-        const targetWidth = isPortrait ? 1080 : 1920;
-        const targetHeight = isPortrait ? 1920 : 1080;
-
         // Dedicated try-catch to silently catch user cancellation on iOS ReplayKit and Android MediaProjection
         try {
-          await localParticipant.setScreenShareEnabled(
-            true,
-            {
-              audio: false, // Prevents virtual audio capture crashes
-              resolution: {
-                width: targetWidth,
-                height: targetHeight,
-                frameRate: 15, // 15 fps preserves maximum clarity and text sharpness without thermal throttling
-              },
-              maxBitrate: 3_000_000, // 3.0 Mbps for crisp 1080p detail
-              contentHint: 'detail', // Hints WebRTC encoder to prioritize sharpness over motion smoothness
-              simulcast: false,
-            } as any,
-            {
-              simulcast: false,
-              videoCodec: 'h264',
-              backupCodec: { codec: 'vp8' },
-              screenShareEncoding: {
-                maxBitrate: 3_000_000,
-                maxFramerate: 15,
-              },
-              contentHint: 'detail',
-              degradationPreference: 'maintain-resolution',
-            } as any
-          );
+          // Clean invocation without web-only constraints that break React Native Android getDisplayMedia
+          await localParticipant.setScreenShareEnabled(true);
         } catch (shareErr: any) {
+          console.error('Failed to start screen share:', shareErr);
           const errMsg = (shareErr?.message || shareErr?.name || String(shareErr) || '').toLowerCase();
-          console.warn('[ScreenShare] setScreenShareEnabled catch:', errMsg);
 
           // Silently handle user cancellation on both iOS (ReplayKit cancel) and Android (MediaProjection cancel)
           const isCancelled =
