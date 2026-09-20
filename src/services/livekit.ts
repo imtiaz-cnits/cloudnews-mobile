@@ -23,7 +23,7 @@ export function initLiveKit() {
  * and Opus RED (packet-loss resilience).
  */
 export const DEFAULT_ROOM_OPTIONS: RoomOptions = {
-  adaptiveStream: true,
+  adaptiveStream: false,
   dynacast: true,
   audioCaptureDefaults: {
     echoCancellation: true,
@@ -36,8 +36,8 @@ export const DEFAULT_ROOM_OPTIONS: RoomOptions = {
     dtx: true,
     red: true,
     screenShareEncoding: {
-      maxBitrate: 4_000_000,
-      maxFramerate: 30,
+      maxBitrate: 3_000_000,
+      maxFramerate: 15,
     },
   },
 };

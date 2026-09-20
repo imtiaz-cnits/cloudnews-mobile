@@ -670,9 +670,14 @@ const ScreenShareView: React.FC<{
       ) : (
         /* Remote Screen Share View: Displays the video stream shared by other participants */
         <>
-          <VideoTrack trackRef={track} style={styles.cardVideo} objectFit="contain" mirror={false} />
-          {(!track?.publication?.track || track?.publication?.isMuted) && (
-            <View style={styles.screenShareLoadingOverlay} pointerEvents="none">
+          <VideoTrack
+            trackRef={track}
+            style={styles.cardVideo}
+            objectFit="contain"
+            mirror={false}
+          />
+          {!track?.publication?.track && (
+            <View style={[styles.screenShareLoadingOverlay, { zIndex: 0 }]} pointerEvents="none">
               <ActivityIndicator size="large" color="#00A8FF" style={{ marginBottom: 12 }} />
               <Text style={styles.screenShareLoadingText}>
                 {t('meeting.connectingScreenShare') || 'Connecting to screen share...'}
@@ -1262,8 +1267,10 @@ export const MeetingRoomContent: React.FC<{
   }, [isCameraOff]);
 
   const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [isScreenShareToggling, setIsScreenShareToggling] = useState(false);
-  const isScreenShareTogglingRef = useRef(false);
+  const [isShareButtonBusy, setIsShareButtonBusy] = useState(false);
+  const isTogglingScreenShareRef = useRef(false);
+  const isScreenShareToggling = isShareButtonBusy;
+  const isScreenShareTogglingRef = isTogglingScreenShareRef;
   const isStartingScreenShareRef = useRef(false);
   const screenCapturePickerRef = useRef<any>(null);
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
@@ -1556,6 +1563,9 @@ export const MeetingRoomContent: React.FC<{
         if (typeof remotePub.setSubscribed === 'function' && !remotePub.isSubscribed) {
           console.log('[ScreenShare] Auto-subscribing to remote screen share track:', t.participant?.identity);
           remotePub.setSubscribed(true);
+        }
+        if (typeof remotePub.setEnabled === 'function' && !remotePub.isEnabled) {
+          remotePub.setEnabled(true);
         }
       }
     });
@@ -2960,7 +2970,7 @@ export const MeetingRoomContent: React.FC<{
 
   const handleToggleScreenShare = async () => {
     if (!localParticipant) return;
-    if (isScreenShareTogglingRef.current || isStartingScreenShareRef.current) {
+    if (isTogglingScreenShareRef.current || isStartingScreenShareRef.current) {
       console.log('[ScreenShare] Toggle or start already in progress, ignoring duplicate call');
       return;
     }
@@ -2974,8 +2984,8 @@ export const MeetingRoomContent: React.FC<{
       return;
     }
 
-    isScreenShareTogglingRef.current = true;
-    setIsScreenShareToggling(true);
+    isTogglingScreenShareRef.current = true;
+    setIsShareButtonBusy(true);
 
     const nextSharing = !isScreenSharing;
     try {
@@ -3003,50 +3013,37 @@ export const MeetingRoomContent: React.FC<{
           }
         }
 
-        // 3. Mobile-optimized crystal-clear screen share: native mobile portrait aspect ratio, hardware H.264 acceleration
-
+        // 3. Mobile-optimized crystal-clear 1080p Full HD screen share:
+        // 1080x1920 portrait / 1920x1080 landscape @ 15fps, 3.0 Mbps bitrate, contentHint: 'detail'
         const screenDim = Dimensions.get('screen');
         const isPortrait = screenDim.height >= screenDim.width;
-        const androidVersion =
-          Platform.OS === 'android'
-            ? typeof Platform.Version === 'number'
-              ? Platform.Version
-              : parseInt(String(Platform.Version), 10) || 30
-            : 30;
-        const isLegacyAndroid = Platform.OS === 'android' && androidVersion <= 29;
-
-        // Device-adaptive resolution & bitrate configuration:
-        // On Android 9/10 (EMUI 10 / MIUI 11-12 / Older chipsets):
-        // 720p HD (720x1280 portrait / 1280x720 landscape) aligned to 16-pixel macroblocks at 2.5 Mbps
-        // completely eliminates hardware encoder overload, initial flickering, lag, and black screen.
-        // On Android 11+ and iOS:
-        // 1080p Full HD (1080x1920 portrait / 1920x1080 landscape) at 4.0 Mbps with 30fps.
-        const targetWidth = isLegacyAndroid ? (isPortrait ? 720 : 1280) : (isPortrait ? 1080 : 1920);
-        const targetHeight = isLegacyAndroid ? (isPortrait ? 1280 : 720) : (isPortrait ? 1920 : 1080);
-        const targetBitrate = isLegacyAndroid ? 2_500_000 : 4_000_000;
-        const targetFps = isLegacyAndroid ? 25 : 30;
+        const targetWidth = isPortrait ? 1080 : 1920;
+        const targetHeight = isPortrait ? 1920 : 1080;
 
         // Dedicated try-catch to silently catch user cancellation on iOS ReplayKit and Android MediaProjection
         try {
           await localParticipant.setScreenShareEnabled(
             true,
             {
-              audio: false,
-              contentHint: 'detail',
+              audio: false, // Prevents virtual audio capture crashes
               resolution: {
                 width: targetWidth,
                 height: targetHeight,
-                frameRate: targetFps,
+                frameRate: 15, // 15 fps preserves maximum clarity and text sharpness without thermal throttling
               },
-            },
+              maxBitrate: 3_000_000, // 3.0 Mbps for crisp 1080p detail
+              contentHint: 'detail', // Hints WebRTC encoder to prioritize sharpness over motion smoothness
+              simulcast: false,
+            } as any,
             {
               simulcast: false,
               videoCodec: 'h264',
               backupCodec: { codec: 'vp8' },
               screenShareEncoding: {
-                maxBitrate: targetBitrate,
-                maxFramerate: targetFps,
+                maxBitrate: 3_000_000,
+                maxFramerate: 15,
               },
+              contentHint: 'detail',
               degradationPreference: 'maintain-resolution',
             } as any
           );
@@ -3147,11 +3144,11 @@ export const MeetingRoomContent: React.FC<{
       );
     } finally {
       isStartingScreenShareRef.current = false;
-      // Release toggle lock with buffer to debounce double-taps
+      // Release toggle lock with 1000ms buffer to debounce double-taps
       setTimeout(() => {
-        isScreenShareTogglingRef.current = false;
-        setIsScreenShareToggling(false);
-      }, 400);
+        isTogglingScreenShareRef.current = false;
+        setIsShareButtonBusy(false);
+      }, 1000);
     }
   };
 
@@ -4868,7 +4865,16 @@ const styles = StyleSheet.create({
   },
   fullScreenCard: { width: '100%', height: '100%', borderRadius: 0, borderWidth: 0, backgroundColor: '#050B14', overflow: 'hidden' },
   activeSpeakerCard: { borderColor: '#10b981', borderWidth: 2 },
-  cardVideo: { width: '100%', height: '100%' },
+  cardVideo: {
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 1,
+  },
   // Floating Presenter Card on Screen Share
   floatingPresenterCard: {
     position: 'absolute',

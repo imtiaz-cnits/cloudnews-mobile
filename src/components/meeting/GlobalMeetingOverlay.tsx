@@ -216,7 +216,7 @@ export const GlobalMeetingOverlay: React.FC = () => {
     if (!activeMeeting?.token || !activeMeeting?.serverUrl) return undefined;
     initLiveKit();
     return new Room({
-      adaptiveStream: true,
+      adaptiveStream: false,
       dynacast: true,
       stopLocalTrackOnUnpublish: false,
       audioCaptureDefaults: {
@@ -232,8 +232,8 @@ export const GlobalMeetingOverlay: React.FC = () => {
         backupCodec: { codec: 'vp8' },
         videoEncoding: videoPreset.encoding,
         screenShareEncoding: {
-          maxBitrate: 4_000_000,
-          maxFramerate: 30,
+          maxBitrate: 3_000_000,
+          maxFramerate: 15,
         },
         dtx: true,
         red: true,
