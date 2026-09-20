@@ -209,10 +209,23 @@ export const createMeeting = async (
 };
 
 // 3. Join Meeting
-export const joinMeeting = async (code: string, passcode?: string): Promise<ApiResponse<MeetingData>> => {
-  // Ensure the code is clean before sending
-  const cleanCode = code.replace(/[\s-]/g, '');
-  return (await apiClient.post(`/meetings/${cleanCode}/join`, passcode ? { passcode } : {})).data;
+export const joinMeeting = async (
+  code: string,
+  passcode?: string,
+  name?: string
+): Promise<ApiResponse<MeetingData>> => {
+  // Ensure the code is clean and URL-safe before sending
+  const cleanDigits = code.replace(/[\s-]/g, '');
+  const cleanCode = encodeURIComponent(cleanDigits);
+  const payload: Record<string, any> = {};
+  if (passcode) {
+    payload.passcode = passcode;
+  }
+  if (name && name.trim()) {
+    payload.participant_name = name.trim();
+    payload.name = name.trim();
+  }
+  return (await apiClient.post(`/meetings/${cleanCode}/join`, payload)).data;
 };
 
 export const joinMeetingRoom = joinMeeting;

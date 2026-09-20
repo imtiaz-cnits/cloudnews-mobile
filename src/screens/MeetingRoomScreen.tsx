@@ -16,6 +16,7 @@ import {
   ParticipantEvent,
   DataPacket_Kind,
   facingModeFromLocalTrack,
+  DisconnectReason,
 } from 'livekit-client';
 import * as Clipboard from 'expo-clipboard';
 import {
@@ -115,7 +116,6 @@ import {
   releaseScreenShareWakeLock,
   startMeetingForegroundService,
   stopMeetingForegroundService,
-  requestOverlayPermission,
 } from '../utils/wakeLock';
 import { startAudioSession, stopAudioSession } from '../services/livekit';
 import { MediaPreviewModal, MediaPreviewItem, sanitizeMediaUrl } from '../components/meeting/MediaPreviewModal';
@@ -1164,19 +1164,31 @@ export const MeetingRoomContent: React.FC<{
 
   const [isNativePip, setIsNativePip] = useState<boolean>(false);
   const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
+  const isUserLeavingRef = useRef<boolean>(false);
 
   // Subscribe to LiveKit room reconnection lifecycle
   useEffect(() => {
     if (!room) return;
 
     const handleReconnecting = () => {
-      console.log('[MeetingRoomScreen] LiveKit room is reconnecting...');
+      console.log('[MeetingRoomScreen] Network interruption detected, LiveKit is reconnecting...');
       setIsReconnecting(true);
     };
 
     const handleReconnected = () => {
-      console.log('[MeetingRoomScreen] LiveKit room reconnected successfully!');
+      console.log('[MeetingRoomScreen] Successfully reconnected to the room');
       setIsReconnecting(false);
+
+      // Re-sync local audio/video publish state if active
+      const lp = room.localParticipant;
+      if (lp) {
+        if (!isMicMutedRef.current && !lp.isMicrophoneEnabled) {
+          lp.setMicrophoneEnabled(true).catch(() => {});
+        }
+        if (!isCameraOffRef.current && !lp.isCameraEnabled) {
+          lp.setCameraEnabled(true).catch(() => {});
+        }
+      }
     };
 
     room.on(RoomEvent.Reconnecting, handleReconnecting);
@@ -2239,6 +2251,7 @@ export const MeetingRoomContent: React.FC<{
       console.warn('[MeetingRoomScreen] Error disconnecting room:', e);
     }
 
+    isUserLeavingRef.current = true;
     onLeave();
   }, [isHost, localParticipant, room, meetingCode, onLeave, t]);
 
@@ -2270,6 +2283,7 @@ export const MeetingRoomContent: React.FC<{
       await room?.disconnect();
     } catch {}
 
+    isUserLeavingRef.current = true;
     onLeave();
   }, [isHost, handleLeaveOrEndMeeting, localParticipant, meetingCode, room, onLeave]);
 
@@ -2566,20 +2580,51 @@ export const MeetingRoomContent: React.FC<{
 
     const handleParticipantDisconnected = (participant: Participant) => {
       console.log('[MeetingRoomScreen] Participant disconnected:', participant.identity);
-      const isHostDisconnected =
-        checkIsParticipantHost(participant) ||
-        (hostIdentityRef.current && participant.identity === hostIdentityRef.current);
-
-      if (isHostDisconnected && !isHost) {
-        console.log('[MeetingRoomScreen] Host disconnected! Auto-ending meeting for guest.');
-        handleMeetingEndedNotice();
-      }
+      // Note: Do NOT immediately kick guests when host temporarily drops (ICE restart or WiFi switch).
+      // LiveKit data message 'MEETING_ENDED_BY_HOST' and RoomEvent.Disconnected with ROOM_CLOSED / ROOM_DELETED
+      // handle explicit server closure.
     };
 
     const handleRoomDisconnected = (reason?: any) => {
       console.log('[MeetingRoomScreen] Room disconnected with reason:', reason);
-      if (!isHost) {
+      setIsReconnecting(false);
+
+      if (isUserLeavingRef.current) {
+        return;
+      }
+
+      if (isHost) {
+        // Host absolute immunity against premature ejection
+        console.log('[MeetingRoomScreen] Host disconnected event ignored for session preservation');
+        return;
+      }
+
+      // Only show "Meeting ended by host" if the room was explicitly closed by the host or server
+      if (reason === DisconnectReason.ROOM_CLOSED || reason === DisconnectReason.ROOM_DELETED) {
         handleMeetingEndedNotice();
+      } else if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
+        handleRemovedByHostNotice();
+      } else {
+        // Network timeout or transient socket drop after retries: Offer retry rather than abruptly terminating
+        Alert.alert(
+          t('meeting.connectionLostTitle') || 'Connection Lost',
+          t('meeting.connectionLostDesc') || 'Connection was lost due to network issues. Would you like to reconnect?',
+          [
+            {
+              text: t('meeting.leave') || 'Leave',
+              style: 'cancel',
+              onPress: onLeave,
+            },
+            {
+              text: t('common.retry') || 'Reconnect',
+              onPress: () => {
+                if (room && room.state !== ConnectionState.Connected) {
+                  setIsReconnecting(true);
+                }
+              },
+            },
+          ]
+        );
       }
     };
 
@@ -2590,7 +2635,7 @@ export const MeetingRoomContent: React.FC<{
       room.off(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected);
       room.off(RoomEvent.Disconnected, handleRoomDisconnected);
     };
-  }, [room, isHost, handleMeetingEndedNotice]);
+  }, [room, isHost, handleMeetingEndedNotice, handleRemovedByHostNotice, onLeave, t]);
 
   const sendChatMessage = useCallback(async () => {
     const textToSend = chatInput.trim();
@@ -2959,10 +3004,6 @@ export const MeetingRoomContent: React.FC<{
         }
 
         // 3. Mobile-optimized crystal-clear screen share: native mobile portrait aspect ratio, hardware H.264 acceleration
-        // Request overlay permission if needed on Android (MIUI 12 / Huawei) to ensure background capture operates smoothly
-        if (Platform.OS === 'android') {
-          requestOverlayPermission();
-        }
 
         const screenDim = Dimensions.get('screen');
         const isPortrait = screenDim.height >= screenDim.width;
@@ -3602,6 +3643,24 @@ export const MeetingRoomContent: React.FC<{
             <Text style={styles.leaveText}>{t('meeting.leave')}</Text>
           </TouchableOpacity>
         </Animated.View>
+      )}
+
+      {/* --- FLOATING RECONNECTING BANNER (Zoom-Style Non-Blocking Auto-Recovery) --- */}
+      {isReconnecting && (
+        <View
+          style={[
+            styles.reconnectingBanner,
+            {
+              top: insets.top + (showControls ? 58 : 14),
+            },
+          ]}
+          pointerEvents="none"
+        >
+          <ActivityIndicator color="#FFFFFF" size="small" style={{ marginRight: 8 }} />
+          <Text style={styles.reconnectingText}>
+            {t('meeting.reconnecting') || '正在重新连接会议... (Reconnecting...)'}
+          </Text>
+        </View>
       )}
 
       {/* --- FLOATING SCREEN SHARE STOP BANNER (One-Tap In-App Stop) --- */}
@@ -6664,6 +6723,29 @@ const styles = StyleSheet.create({
     height: 1,
     opacity: 0,
     bottom: -100,
+  },
+  reconnectingBanner: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(234, 88, 12, 0.95)',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 9999,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  reconnectingText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontFamily: 'PlusJakartaSans-SemiBold',
   },
 });
 

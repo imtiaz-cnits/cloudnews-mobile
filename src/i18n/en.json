@@ -115,6 +115,8 @@
   "meeting": {
     "connecting": "Connecting to meeting room...",
     "reconnecting": "Reconnecting to meeting...",
+    "connectionLostTitle": "Connection Lost",
+    "connectionLostDesc": "Connection was lost due to network instability. Would you like to reconnect?",
     "waiting": "Waiting for participants...",
     "leave": "Leave",
     "endCall": "End Call",

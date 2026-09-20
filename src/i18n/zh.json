@@ -115,6 +115,8 @@
   "meeting": {
     "connecting": "正在连接会议室...",
     "reconnecting": "正在重新连接会议...",
+    "connectionLostTitle": "网络连接中断",
+    "connectionLostDesc": "由于网络不稳定，会议连接已中断。是否尝试重新连接？",
     "waiting": "等待其他参会者加入...",
     "leave": "离开",
     "endCall": "结束会议",

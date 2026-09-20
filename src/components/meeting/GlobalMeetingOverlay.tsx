@@ -60,6 +60,7 @@ export const GlobalMeetingOverlay: React.FC = () => {
   const [hasAudioPermission, setHasAudioPermission] = useState(true);
   const [meetingSettings, setMeetingSettings] = useState<MeetingSettings>(DEFAULT_MEETING_SETTINGS);
   const activeMeetingKeyRef = useRef<string | null>(null);
+  const isUserLeavingRef = useRef(false);
 
   useEffect(() => {
     (async () => {
@@ -177,6 +178,11 @@ export const GlobalMeetingOverlay: React.FC = () => {
       return;
     }
 
+    if (isUserLeavingRef.current) {
+      endMeeting();
+      return;
+    }
+
     if (
       reason === DisconnectReason.CLIENT_INITIATED ||
       reason === DisconnectReason.ROOM_DELETED ||
@@ -212,6 +218,7 @@ export const GlobalMeetingOverlay: React.FC = () => {
     return new Room({
       adaptiveStream: true,
       dynacast: true,
+      stopLocalTrackOnUnpublish: false,
       audioCaptureDefaults: {
         echoCancellation: true,
         noiseSuppression: true,
@@ -246,6 +253,7 @@ export const GlobalMeetingOverlay: React.FC = () => {
   }, [room]);
 
   const handleFloatingLeave = useCallback(async () => {
+    isUserLeavingRef.current = true;
     if (activeMeeting?.isHost && activeMeeting.meetingCode) {
       try {
         await endMeetingApi(activeMeeting.meetingCode);

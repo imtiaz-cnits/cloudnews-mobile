@@ -35,24 +35,12 @@ class ScreenShareWakeLockModule(reactContext: ReactApplicationContext) : ReactCo
                 wakeLock?.acquire(4 * 60 * 60 * 1000L) // 4 hours safe maximum duration
             }
 
-            // Automatically request battery optimization exemption (vital for MIUI 12 and Huawei to keep screen capture running)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && powerManager != null) {
-                val packageName = reactApplicationContext.packageName
-                if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                    val activity = currentActivity
-                    if (activity != null) {
-                        try {
-                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                                data = Uri.parse("package:$packageName")
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            activity.startActivity(intent)
-                        } catch (intentErr: Exception) {
-                            intentErr.printStackTrace()
-                        }
-                    }
-                }
-            }
+            // Update foreground service notification to Zoom-style screen sharing notification
+            MeetingForegroundService.startService(
+                reactApplicationContext,
+                "云讯 / CloudNews",
+                "正在共享屏幕 · 屏幕共享进行中 / Screen sharing is active"
+            )
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -60,24 +48,7 @@ class ScreenShareWakeLockModule(reactContext: ReactApplicationContext) : ReactCo
 
     @ReactMethod
     fun requestOverlayPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                if (!Settings.canDrawOverlays(reactApplicationContext)) {
-                    val activity = currentActivity
-                    if (activity != null) {
-                        val intent = Intent(
-                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:${reactApplicationContext.packageName}")
-                        ).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        activity.startActivity(intent)
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // Safe no-op: native MediaProjection directly captures screen without redirecting to system settings
     }
 
     @ReactMethod

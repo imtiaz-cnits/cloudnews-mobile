@@ -172,7 +172,7 @@ export const JoinScreen: React.FC = () => {
       pollingTimerRef.current = setInterval(async () => {
         try {
           console.log('[Join] Polling for host on code:', cleanCode);
-          const res = await joinMeeting(cleanCode, passcodeVal);
+          const res = await joinMeeting(cleanCode, passcodeVal, effectiveDisplayName);
 
           if (res?.success && res.data?.livekit_token) {
             console.log('[Join] Host has arrived! Connecting to LiveKit room...');
@@ -409,7 +409,7 @@ export const JoinScreen: React.FC = () => {
       console.log('[Join] Joining room with code:', cleanCode);
       let meetingRes;
       try {
-        meetingRes = await joinMeeting(cleanCode, passcode.trim() || undefined);
+        meetingRes = await joinMeeting(cleanCode, passcode.trim() || undefined, effectiveDisplayName);
       } catch (joinErr: any) {
         // Handle token expiration: re-login guest if guest; if host alert cleanly
         if (joinErr.response?.status === 401) {
@@ -421,7 +421,7 @@ export const JoinScreen: React.FC = () => {
             if (freshGuest.success && freshGuest.data?.token) {
               await storage.setItem(StorageKeys.AUTH_TOKEN, freshGuest.data.token);
               await storage.setItem(StorageKeys.IS_GUEST, 'true');
-              meetingRes = await joinMeeting(cleanCode, passcode.trim() || undefined);
+              meetingRes = await joinMeeting(cleanCode, passcode.trim() || undefined, effectiveDisplayName);
             } else {
               throw joinErr;
             }
