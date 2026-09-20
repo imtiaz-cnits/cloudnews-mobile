@@ -235,18 +235,21 @@ const ParticipantCard: React.FC<{
   style,
 }) => {
     const { t } = useTranslation();
-    const tracks = useTracks([Track.Source.Camera], { onlySubscribed: false });
+    const tracks = useTracks([Track.Source.Camera, Track.Source.ScreenShare], { onlySubscribed: false });
     const cameraTrack = tracks.find(t => t.participant?.identity === participant.identity && t.source === Track.Source.Camera);
+    const screenShareTrack = tracks.find(t => t.participant?.identity === participant.identity && t.source === Track.Source.ScreenShare);
 
     const [isCameraEnabled, setIsCameraEnabled] = useState(participant.isCameraEnabled);
     const [isMicEnabled, setIsMicEnabled] = useState(participant.isMicrophoneEnabled);
     const [isSpeaking, setIsSpeaking] = useState(participant.isSpeaking);
+    const [isScreenShareEnabled, setIsScreenShareEnabled] = useState(Boolean(participant.isScreenShareEnabled));
 
     useEffect(() => {
       const onUpdate = () => {
         setIsCameraEnabled(participant.isCameraEnabled);
         setIsMicEnabled(participant.isMicrophoneEnabled);
         setIsSpeaking(participant.isSpeaking);
+        setIsScreenShareEnabled(Boolean(participant.isScreenShareEnabled));
       };
       participant.on('trackPublished', onUpdate);
       participant.on('trackUnpublished', onUpdate);
@@ -368,7 +371,53 @@ const ParticipantCard: React.FC<{
           style,
         ]}
       >
-        {isCameraEnabled && cameraTrack?.publication?.track ? (
+        {screenShareTrack?.publication?.track ? (
+          <>
+            <VideoTrack
+              trackRef={screenShareTrack}
+              style={styles.cardVideo}
+              objectFit="contain"
+              mirror={false}
+            />
+            {/* Bottom translucent name pill so participant name & mic are always visible on video */}
+            <View style={[styles.videoNamePill, { bottom: density === 'ultra-compact' ? 5 : 8, left: density === 'ultra-compact' ? 5 : 8 }]}>
+              <MonitorUp color="#00A8FF" size={avatarMetrics.micSize} style={{ marginRight: 4 }} />
+              <Text style={[styles.videoNameText, { fontSize: avatarMetrics.nameSize }]} numberOfLines={1}>
+                {displayName}
+              </Text>
+              {isMicEnabled ? (
+                <Mic color="#10b981" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
+              ) : (
+                <MicOff color="#ef4444" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
+              )}
+            </View>
+          </>
+        ) : isLocal && (isScreenShareEnabled || screenShareTrack) ? (
+          <View style={styles.gridScreenShareLocalPlaceholder}>
+            <LinearGradient
+              colors={['rgba(0, 168, 255, 0.12)', 'rgba(0, 60, 140, 0.28)']}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.gridScreenShareIconBadge}>
+              <Monitor color="#00A8FF" size={avatarMetrics.circleSize ? Math.floor(avatarMetrics.circleSize * 0.4) : 22} />
+            </View>
+            <Text style={[styles.gridScreenShareLocalTitle, { fontSize: avatarMetrics.nameSize }]} numberOfLines={1}>
+              {t('meeting.sharingYourScreenTitle') || 'You are sharing your screen'}
+            </Text>
+            {/* Bottom translucent name pill */}
+            <View style={[styles.videoNamePill, { bottom: density === 'ultra-compact' ? 5 : 8, left: density === 'ultra-compact' ? 5 : 8 }]}>
+              <MonitorUp color="#00A8FF" size={avatarMetrics.micSize} style={{ marginRight: 4 }} />
+              <Text style={[styles.videoNameText, { fontSize: avatarMetrics.nameSize }]} numberOfLines={1}>
+                {displayName}
+              </Text>
+              {isMicEnabled ? (
+                <Mic color="#10b981" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
+              ) : (
+                <MicOff color="#ef4444" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
+              )}
+            </View>
+          </View>
+        ) : isCameraEnabled && cameraTrack?.publication?.track ? (
           <>
             <VideoTrack
               trackRef={cameraTrack}
@@ -484,6 +533,28 @@ const ParticipantCard: React.FC<{
                     ]}
                   >
                     {t('meeting.host')}
+                  </Text>
+                </View>
+              )}
+              {Boolean(screenShareTrack?.publication?.track || (isLocal && isScreenShareEnabled)) && (
+                <View
+                  style={[
+                    styles.participantScreenShareBadge,
+                    !isSingleOrFullScreen && {
+                      paddingHorizontal: avatarMetrics.hostBadgePaddingH,
+                      paddingVertical: avatarMetrics.hostBadgePaddingV,
+                      borderRadius: density === 'ultra-compact' ? 4 : 6,
+                    },
+                  ]}
+                >
+                  <MonitorUp color="#00A8FF" size={avatarMetrics.hostBadgeFontSize} style={{ marginRight: 3 }} />
+                  <Text
+                    style={[
+                      styles.participantScreenShareBadgeText,
+                      !isSingleOrFullScreen && { fontSize: avatarMetrics.hostBadgeFontSize },
+                    ]}
+                  >
+                    {t('meeting.sharingYourScreenSub') || 'Screen'}
                   </Text>
                 </View>
               )}
@@ -1897,7 +1968,7 @@ export const MeetingRoomContent: React.FC<{
     );
 
     const participantCount = activeMeetingParticipants.length;
-    const totalItems = participantCount + (activeScreenShare ? 1 : 0);
+    const totalItems = participantCount;
 
     let cols = 2;
     let rows = 2;
@@ -1969,7 +2040,7 @@ export const MeetingRoomContent: React.FC<{
       density,
       isScrollable: totalItems > (cols * rows),
     };
-  }, [windowWidth, windowHeight, insets.top, insets.bottom, activeMeetingParticipants.length, activeScreenShare]);
+  }, [windowWidth, windowHeight, insets.top, insets.bottom, activeMeetingParticipants.length]);
 
   // User manual layout toggle: full screen vs grid mode
   const [isGridMode, setIsGridMode] = useState(false);
@@ -3791,63 +3862,6 @@ export const MeetingRoomContent: React.FC<{
               ]}
               onPress={handleScreenTap}
             >
-              {activeScreenShare && (
-                (() => {
-                  const isLocalScreenShare = Boolean(
-                    isScreenSharing ||
-                    activeScreenShare.participant?.isLocal ||
-                    (localParticipant && activeScreenShare.participant?.identity === localParticipant.identity)
-                  );
-
-                  return (
-                    <TouchableOpacity
-                      activeOpacity={0.9}
-                      style={[
-                        styles.participantCard,
-                        styles.gridScreenShareCard,
-                        {
-                          width: gridLayout.cols === 1 ? gridLayout.cardWidth : '100%',
-                          height: Math.min(220, Math.floor(gridLayout.cardHeight * 1.3)),
-                        },
-                      ]}
-                      onPress={() => setIsGridMode(false)}
-                    >
-                      {isLocalScreenShare ? (
-                        <View style={styles.gridScreenShareLocalPlaceholder}>
-                          <LinearGradient
-                            colors={['rgba(0, 168, 255, 0.12)', 'rgba(0, 60, 140, 0.28)']}
-                            style={StyleSheet.absoluteFill}
-                          />
-                          <View style={styles.gridScreenShareIconBadge}>
-                            <Monitor color="#00A8FF" size={24} />
-                          </View>
-                          <Text style={styles.gridScreenShareLocalTitle} numberOfLines={1}>
-                            You are sharing your screen
-                          </Text>
-                          <Text style={styles.gridScreenShareLocalSubtitle} numberOfLines={1}>
-                            Participants can see your screen in 1080p
-                          </Text>
-                          <View style={styles.gridScreenShareTapHint}>
-                            <Text style={styles.gridScreenShareTapHintText}>
-                              Tap for Full Screen
-                            </Text>
-                          </View>
-                        </View>
-                      ) : (
-                        <>
-                          <VideoTrack trackRef={activeScreenShare as any} style={styles.cardVideo} objectFit="contain" />
-                          <View style={styles.gridScreenShareBadge}>
-                            <MonitorUp color="#00A8FF" size={14} />
-                            <Text style={styles.gridScreenShareText}>
-                              {activeScreenShare.participant?.name || 'Screen Share'} (Tap for Full Screen)
-                            </Text>
-                          </View>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  );
-                })()
-              )}
               {activeMeetingParticipants.map((p) => (
                 <ParticipantCard
                   key={`participant-${p.identity}`}
@@ -5132,6 +5146,21 @@ const styles = StyleSheet.create({
   },
   screenShareBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0, 168, 255, 0.25)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(0, 168, 255, 0.4)' },
   screenShareBadgeText: { color: '#00A8FF', fontSize: 12, fontFamily: 'PlusJakartaSans-Bold' },
+  participantScreenShareBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 168, 255, 0.25)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 168, 255, 0.45)',
+  },
+  participantScreenShareBadgeText: {
+    color: '#00A8FF',
+    fontFamily: 'PlusJakartaSans-SemiBold',
+    fontSize: 10.5,
+  },
   screenShareStopBadgeBtn: {
     flexDirection: 'row',
     alignItems: 'center',
