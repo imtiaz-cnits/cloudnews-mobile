@@ -112,6 +112,7 @@ import {
   leaveMeeting,
   sendHostHeartbeat,
   reacquireHostSession,
+  joinMeeting,
   removeMeetingParticipant,
   getMeetingMessages,
   sendMeetingMessage,
@@ -1233,7 +1234,28 @@ export const MeetingRoomContent: React.FC<{
             console.log('[MeetingRoomScreen] Host session successfully re-acquired with fresh token');
           }
         } catch (reacquireErr: any) {
+          const reacquireStatus = reacquireErr?.response?.status;
           const reacquireCode = reacquireErr?.response?.data?.code;
+
+          // If the specialized reacquire endpoint returns 404 (e.g. pending backend route deployment),
+          // fall back to re-acquiring the host lock via the existing joinMeeting endpoint.
+          if (reacquireStatus === 404) {
+            console.log('[MeetingRoomScreen] Reacquire endpoint returned 404; falling back to joinMeeting host recovery...');
+            try {
+              const cleanCode = meetingCode.replace(/[\s-]/g, '');
+              const joinRes = await joinMeeting(cleanCode, undefined, undefined, token);
+              if (joinRes.success && joinRes.data?.host_session_token) {
+                const newToken = joinRes.data.host_session_token;
+                hostSessionTokenRef.current = newToken;
+                await storage.setItem(`host_session_${cleanCode}`, newToken);
+                console.log('[MeetingRoomScreen] Host session successfully recovered via fallback with fresh token');
+                return;
+              }
+            } catch (fallbackErr: any) {
+              console.warn('[MeetingRoomScreen] Host recovery fallback failed:', fallbackErr?.response?.data || fallbackErr?.message);
+            }
+          }
+
           console.warn('[MeetingRoomScreen] Host session re-acquisition failed:', reacquireErr?.response?.data || reacquireErr?.message);
           if (reacquireCode === 'MEETING_ENDED' || reacquireCode === 'HOST_ALREADY_IN_MEETING') {
             console.warn('[MeetingRoomScreen] Critical host ownership conflict:', reacquireCode);
