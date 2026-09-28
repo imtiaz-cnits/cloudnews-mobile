@@ -111,6 +111,7 @@ import {
   endMeeting,
   leaveMeeting,
   sendHostHeartbeat,
+  reacquireHostSession,
   removeMeetingParticipant,
   getMeetingMessages,
   sendMeetingMessage,
@@ -1187,30 +1188,94 @@ export const MeetingRoomContent: React.FC<{
 
   // Persist host session token so app kill/restart can recover it
   useEffect(() => {
-    if (isHostParam && hostSessionTokenRef.current && meetingCode) {
+    if (isHostParam && meetingCode) {
       const cleanCode = meetingCode.replace(/[\s-]/g, '');
-      storage.setItem(`host_session_${cleanCode}`, hostSessionTokenRef.current);
+      if (hostSessionTokenRef.current) {
+        storage.setItem(`host_session_${cleanCode}`, hostSessionTokenRef.current);
+      } else {
+        storage.getItem(`host_session_${cleanCode}`).then(saved => {
+          if (saved && !hostSessionTokenRef.current) {
+            hostSessionTokenRef.current = saved;
+          }
+        }).catch(() => {});
+      }
     }
   }, [isHostParam, meetingCode]);
 
-  // Host session heartbeat (25s interval)
+  const isReacquiringRef = useRef<boolean>(false);
+
+  // Controlled host session heartbeat with automatic background lease recovery
+  const performHostHeartbeat = useCallback(async (isForegroundPulse: boolean = false) => {
+    if (!isHostParam || !meetingCode || isReacquiringRef.current) return;
+    const token = hostSessionTokenRef.current;
+    if (!token) return;
+
+    try {
+      await sendHostHeartbeat(meetingCode, token);
+      if (__DEV__ && isForegroundPulse) {
+        console.log('[MeetingRoomScreen] Foreground host heartbeat acknowledged');
+      }
+    } catch (err: any) {
+      const errorCode = err?.response?.data?.code;
+
+      // When the host lease expired (e.g. background > 90s), perform controlled re-acquisition
+      // using the existing acquireHostLock() rules.
+      if (errorCode === 'HOST_SESSION_INVALID' && !isReacquiringRef.current) {
+        isReacquiringRef.current = true;
+        console.log('[MeetingRoomScreen] Host session lease expired; performing controlled re-acquisition...');
+        try {
+          const reacquireRes = await reacquireHostSession(meetingCode, token);
+          if (reacquireRes.success && reacquireRes.data?.host_session_token) {
+            const newToken = reacquireRes.data.host_session_token;
+            hostSessionTokenRef.current = newToken;
+            const cleanCode = meetingCode.replace(/[\s-]/g, '');
+            await storage.setItem(`host_session_${cleanCode}`, newToken);
+            console.log('[MeetingRoomScreen] Host session successfully re-acquired with fresh token');
+          }
+        } catch (reacquireErr: any) {
+          const reacquireCode = reacquireErr?.response?.data?.code;
+          console.warn('[MeetingRoomScreen] Host session re-acquisition failed:', reacquireErr?.response?.data || reacquireErr?.message);
+          if (reacquireCode === 'MEETING_ENDED' || reacquireCode === 'HOST_ALREADY_IN_MEETING') {
+            console.warn('[MeetingRoomScreen] Critical host ownership conflict:', reacquireCode);
+          }
+        } finally {
+          isReacquiringRef.current = false;
+        }
+      } else {
+        console.warn('[MeetingRoomScreen] Host heartbeat warning:', err?.response?.data || err?.message);
+      }
+    }
+  }, [isHostParam, meetingCode]);
+
+  // Periodic Host session heartbeat (20s interval)
   useEffect(() => {
     if (!isHostParam || !meetingCode) return;
 
-    const interval = setInterval(async () => {
-      const token = hostSessionTokenRef.current;
-      if (!token) return;
-      try {
-        await sendHostHeartbeat(meetingCode, token);
-      } catch (err: any) {
-        console.warn('[MeetingRoomScreen] Host heartbeat warning:', err?.response?.data || err?.message);
-      }
-    }, 25000);
+    const interval = setInterval(() => {
+      performHostHeartbeat(false);
+    }, 20000);
 
     return () => {
       clearInterval(interval);
     };
-  }, [isHostParam, meetingCode]);
+  }, [isHostParam, meetingCode, performHostHeartbeat]);
+
+  // Immediate Foreground / PiP Resume Pulse
+  useEffect(() => {
+    if (!isHostParam || !meetingCode) return;
+
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        if (__DEV__) console.log('[MeetingRoomScreen] AppState active: sending immediate host heartbeat/recovery pulse');
+        performHostHeartbeat(true);
+      }
+    };
+
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => {
+      sub.remove();
+    };
+  }, [isHostParam, meetingCode, performHostHeartbeat]);
 
   const { activeMeeting, isReconnectingUI, manualReconnect } = useMeeting();
   const [isNativePip, setIsNativePip] = useState<boolean>(false);

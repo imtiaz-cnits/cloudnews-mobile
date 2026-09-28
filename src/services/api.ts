@@ -311,6 +311,19 @@ export const sendHostHeartbeat = async (
   })).data;
 };
 
+// 6c. Re-acquire Host Session
+export const reacquireHostSession = async (
+  code: string,
+  hostSessionToken?: string
+): Promise<ApiResponse<{ host_session_token: string; expires_at: string; last_seen_at: string }>> => {
+  const cleanCode = code.replace(/[\s-]/g, '');
+  const payload: any = {};
+  if (hostSessionToken) {
+    payload.host_session_token = hostSessionToken;
+  }
+  return (await apiClient.post(`/meetings/${cleanCode}/host/reacquire`, payload)).data;
+};
+
 // 7. Schedule Meeting
 export const scheduleMeeting = async (data: {
   title: string;
@@ -470,6 +483,7 @@ export default {
   endMeeting,
   leaveMeeting,
   sendHostHeartbeat,
+  reacquireHostSession,
   removeMeetingParticipant,
   scheduleMeeting,
   getScheduledMeetings,
