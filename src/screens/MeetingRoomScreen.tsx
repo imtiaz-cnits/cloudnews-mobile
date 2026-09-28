@@ -20,6 +20,7 @@ import {
   facingModeFromLocalTrack,
   DisconnectReason,
   TrackPublishOptions,
+  LocalTrackPublication,
   RemoteParticipant,
   RemoteTrack,
   RemoteTrackPublication,
@@ -1427,6 +1428,8 @@ export const MeetingRoomContent: React.FC<{
     isCameraOffRef.current = isCameraOff;
   }, [isCameraOff]);
 
+  type ScreenShareLifecycleState = 'idle' | 'publishing' | 'unpublishing';
+  const screenShareLifecycleRef = useRef<ScreenShareLifecycleState>('idle');
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isShareButtonBusy, setIsShareButtonBusy] = useState(false);
   const isTogglingScreenShareRef = useRef(false);
@@ -1781,8 +1784,15 @@ export const MeetingRoomContent: React.FC<{
       }
       const enabled = Boolean(localParticipant.isScreenShareEnabled);
       setIsScreenSharing(enabled);
+
+      // If an active transition is already managing the unpublish/publish lifecycle,
+      // prevent re-entrant PiP or wakeLock mutations.
+      if (screenShareLifecycleRef.current !== 'idle') {
+        return;
+      }
+
       if (!enabled) {
-        // System notification "Stop Sharing" or OS single-app stop fired
+        // System notification "Stop Sharing" or OS single-app stop fired externally
         prepareScreenShare(false);
         setPipConfig(!isMinimized, false);
         releaseScreenShareWakeLock();
@@ -3592,8 +3602,112 @@ export const MeetingRoomContent: React.FC<{
     }
   };
 
+  /**
+   * Strictly tears down any existing local screen-share publication and track.
+   * Awaits LiveKit unpublish completion and stops underlying MediaStreamTrack
+   * before any new publish operation may proceed.
+   */
+  const teardownExistingScreenShare = async (source: string = 'teardown'): Promise<void> => {
+    if (!localParticipant) return;
+
+    // Collect all publications associated with ScreenShare
+    const screenPub = localParticipant.getTrackPublication(Track.Source.ScreenShare);
+    const lingeringPubs = Array.from(localParticipant.trackPublications.values()).filter(
+      p => p.source === Track.Source.ScreenShare
+    );
+
+    const targetPubs: LocalTrackPublication[] = [];
+    if (screenPub) {
+      targetPubs.push(screenPub);
+    }
+    for (const p of lingeringPubs) {
+      if (!targetPubs.some(tp => tp.trackSid === p.trackSid)) {
+        targetPubs.push(p);
+      }
+    }
+
+    if (targetPubs.length === 0 && !localParticipant.isScreenShareEnabled) {
+      return;
+    }
+
+    if (__DEV__) {
+      console.log('[ScreenShare-Diag:SCREEN_SHARE_UNPUBLISH_START]', {
+        timestamp: new Date().toISOString(),
+        source,
+        count: targetPubs.length,
+        trackSids: targetPubs.map(p => p.trackSid),
+      });
+    }
+
+    // 1. Unpublish each identified publication and await completion
+    for (const pub of targetPubs) {
+      const track = pub.track;
+      const trackSid = pub.trackSid;
+
+      if (track) {
+        try {
+          await localParticipant.unpublishTrack(track, true);
+        } catch (unpubErr) {
+          if (__DEV__) {
+            console.warn('[ScreenShare-Diag:SCREEN_SHARE_UNPUBLISH_ERROR]', {
+              timestamp: new Date().toISOString(),
+              trackSid,
+              error: unpubErr,
+              source,
+            });
+          }
+        }
+      }
+
+      // Explicitly stop track to release underlying MediaStream
+      if (track) {
+        try {
+          track.stop();
+          if (__DEV__) {
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_TRACK_STOP]', {
+              timestamp: new Date().toISOString(),
+              trackSid,
+              source,
+            });
+          }
+        } catch (stopErr) {
+          // ignore
+        }
+      }
+
+      if (__DEV__) {
+        console.log('[ScreenShare-Diag:SCREEN_SHARE_UNPUBLISH_COMPLETE]', {
+          timestamp: new Date().toISOString(),
+          trackSid,
+          source,
+        });
+      }
+    }
+
+    // 2. Also ensure setScreenShareEnabled(false) has completed in LiveKit's internal state
+    try {
+      await localParticipant.setScreenShareEnabled(false);
+    } catch {
+      // ignore
+    }
+  };
+
   const handleToggleScreenShare = async () => {
-    if (isScreenShareActionInFlight.current || !room || !localParticipant) {
+    if (
+      isScreenShareActionInFlight.current ||
+      screenShareLifecycleRef.current !== 'idle' ||
+      !room ||
+      !localParticipant
+    ) {
+      if (__DEV__) {
+        console.log('[ScreenShare-Diag:SCREEN_SHARE_TRANSITION_IGNORED]', {
+          timestamp: new Date().toISOString(),
+          state: screenShareLifecycleRef.current,
+          actionInFlight: isScreenShareActionInFlight.current,
+          reason: 'Screen share action or transition already in flight',
+          source: 'handleToggleScreenShare',
+        });
+      }
       return;
     }
 
@@ -3614,6 +3728,20 @@ export const MeetingRoomContent: React.FC<{
     const targetState = !currentlyEnabled;
     try {
       if (targetState) {
+        screenShareLifecycleRef.current = 'publishing';
+
+        if (__DEV__) {
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_TRANSITION_START]', {
+            timestamp: new Date().toISOString(),
+            transition: 'publishing',
+            targetState: true,
+            source: 'handleToggleScreenShare',
+          });
+        }
+
+        // Guarantee local teardown before a new publish
+        await teardownExistingScreenShare('pre-publish-teardown');
+
         // 1. Immediately disable Android OS PiP auto-enter before calling LiveKit so Android 14/15 system dialog does not trigger PiP
         isStartingScreenShareRef.current = true;
         prepareScreenShare(true);
@@ -3637,7 +3765,7 @@ export const MeetingRoomContent: React.FC<{
           }
         }
 
-        // Dedicated try-catch to silently catch user cancellation on iOS ReplayKit and Android MediaProjection
+        let pub: LocalTrackPublication | undefined;
         try {
           const profile = SCREEN_SHARE_PROFILES[ACTIVE_SCREEN_SHARE_PROFILE];
           const publishOptions: TrackPublishOptions = {
@@ -3648,6 +3776,7 @@ export const MeetingRoomContent: React.FC<{
           };
           if (__DEV__) {
             console.log('[ScreenShare-Diag:SCREEN_SHARE_PUBLISH_START]', {
+              timestamp: new Date().toISOString(),
               profile: ACTIVE_SCREEN_SHARE_PROFILE,
               profileName: profile.name,
               localParticipantIdentity: localParticipant.identity,
@@ -3657,15 +3786,18 @@ export const MeetingRoomContent: React.FC<{
               degradationPreference: publishOptions.degradationPreference,
             });
           }
-          const pub = await room.localParticipant.setScreenShareEnabled(
-            targetState,
+          pub = await room.localParticipant.setScreenShareEnabled(
+            true,
             undefined,
             publishOptions
           );
           if (__DEV__) {
-            console.log('[ScreenShare-Diag:SCREEN_SHARE_PERMISSION_GRANTED]');
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_PERMISSION_GRANTED]', {
+              timestamp: new Date().toISOString(),
+            });
             const localTrack = pub?.track;
             console.log('[ScreenShare-Diag:SCREEN_SHARE_TRACK_CREATED]', {
+              timestamp: new Date().toISOString(),
               trackSid: pub?.trackSid,
               trackDimensions: (localTrack as any)?.dimensions,
               readyState: (localTrack as any)?.mediaStreamTrack?.readyState,
@@ -3674,6 +3806,7 @@ export const MeetingRoomContent: React.FC<{
               codecConfiguration: publishOptions.videoCodec,
             });
             console.log('[ScreenShare-Diag:SCREEN_SHARE_PUBLISHED]', {
+              timestamp: new Date().toISOString(),
               trackSid: pub?.trackSid,
               isPublished: Boolean(pub),
               isSubscribed: (pub as any)?.isSubscribed,
@@ -3705,6 +3838,19 @@ export const MeetingRoomContent: React.FC<{
           setIsScreenSharing(false);
           releaseScreenShareWakeLock();
 
+          // Clean up any partially created track
+          await teardownExistingScreenShare('publish-error-cleanup').catch(() => {});
+
+          if (__DEV__) {
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_TRANSITION_COMPLETE]', {
+              timestamp: new Date().toISOString(),
+              transition: 'publishing',
+              success: false,
+              cancelled: isCancelled,
+              error: errMsg,
+            });
+          }
+
           if (!isCancelled) {
             const platformName = Platform.OS === 'ios' ? 'iOS / iPhone' : 'Android';
             Alert.alert(
@@ -3731,11 +3877,31 @@ export const MeetingRoomContent: React.FC<{
             console.warn('[ScreenShare] Re-enabling microphone failed:', micErr);
           }
         }
+
+        if (__DEV__) {
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_TRANSITION_COMPLETE]', {
+            timestamp: new Date().toISOString(),
+            transition: 'publishing',
+            success: true,
+            trackSid: pub?.trackSid,
+          });
+        }
       } else {
+        screenShareLifecycleRef.current = 'unpublishing';
+
+        if (__DEV__) {
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_TRANSITION_START]', {
+            timestamp: new Date().toISOString(),
+            transition: 'unpublishing',
+            targetState: false,
+            source: 'handleToggleScreenShare',
+          });
+        }
+
         isStartingScreenShareRef.current = false;
         prepareScreenShare(false);
         try {
-          await room.localParticipant.setScreenShareEnabled(false);
+          await teardownExistingScreenShare('user-stop');
         } finally {
           setIsScreenSharing(false);
           setPipConfig(true, false);
@@ -3751,6 +3917,14 @@ export const MeetingRoomContent: React.FC<{
           } catch (micErr) {
             console.warn('[ScreenShare] Re-enabling microphone after stop failed:', micErr);
           }
+        }
+
+        if (__DEV__) {
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_TRANSITION_COMPLETE]', {
+            timestamp: new Date().toISOString(),
+            transition: 'unpublishing',
+            success: true,
+          });
         }
       }
     } catch (error: any) {
@@ -3780,6 +3954,7 @@ export const MeetingRoomContent: React.FC<{
         `Could not share screen. Please allow screen recording/casting when prompted by ${platformName}.`
       );
     } finally {
+      screenShareLifecycleRef.current = 'idle';
       isStartingScreenShareRef.current = false;
       isScreenShareActionInFlight.current = false;
       isTogglingScreenShareRef.current = false;
@@ -3791,23 +3966,53 @@ export const MeetingRoomContent: React.FC<{
   useEffect(() => {
     if (
       isScreenSharing &&
-      !isScreenShareTogglingRef.current &&
+      screenShareLifecycleRef.current === 'idle' &&
+      !isScreenShareActionInFlight.current &&
       !isStartingScreenShareRef.current &&
       hadRemoteParticipantsRef.current &&
       remoteParticipants.length === 0 &&
       localParticipant
     ) {
+      if (__DEV__) {
+        console.log('[ScreenShare-Diag:SCREEN_SHARE_TRANSITION_START]', {
+          timestamp: new Date().toISOString(),
+          transition: 'unpublishing',
+          targetState: false,
+          source: 'auto-stop:remoteParticipants=0',
+        });
+      }
+
+      screenShareLifecycleRef.current = 'unpublishing';
+      isScreenShareActionInFlight.current = true;
+      setIsShareButtonBusy(true);
       prepareScreenShare(false);
       setPipConfig(true, false);
-      localParticipant.setScreenShareEnabled(false).catch(err => {
-        console.warn('[ScreenShare] Auto-stop failed:', err);
-      }).finally(() => {
-        releaseScreenShareWakeLock();
-      });
-      setIsScreenSharing(false);
-      if (!isMicMutedRef.current) {
-        localParticipant.setMicrophoneEnabled(true).catch(() => {});
-      }
+
+      teardownExistingScreenShare('auto-stop')
+        .catch(err => {
+          console.warn('[ScreenShare] Auto-stop failed:', err);
+        })
+        .finally(() => {
+          screenShareLifecycleRef.current = 'idle';
+          isScreenShareActionInFlight.current = false;
+          setIsShareButtonBusy(false);
+          setIsScreenSharing(false);
+          releaseScreenShareWakeLock();
+
+          if (__DEV__) {
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_TRANSITION_COMPLETE]', {
+              timestamp: new Date().toISOString(),
+              transition: 'unpublishing',
+              source: 'auto-stop',
+              success: true,
+            });
+          }
+
+          if (!isMicMutedRef.current && localParticipant) {
+            localParticipant.setMicrophoneEnabled(true).catch(() => {});
+          }
+        });
+
       Alert.alert(
         t('meeting.screenShareStoppedTitle'),
         t('meeting.screenShareStoppedDesc')
@@ -4305,7 +4510,7 @@ export const MeetingRoomContent: React.FC<{
           <TouchableOpacity
             style={[styles.floatingStopBtn, isScreenShareToggling && { opacity: 0.6 }]}
             onPress={() => {
-              if (isScreenShareTogglingRef.current) return;
+              if (isScreenShareActionInFlight.current || screenShareLifecycleRef.current !== 'idle') return;
               handleToggleScreenShare();
             }}
             disabled={isScreenShareToggling}
@@ -4349,7 +4554,7 @@ export const MeetingRoomContent: React.FC<{
                 renderAudioIcon={renderCurrentAudioIcon}
                 onPress={handleScreenTap}
                 onStopScreenShare={() => {
-                  if (isScreenShareTogglingRef.current) return;
+                  if (isScreenShareActionInFlight.current || screenShareLifecycleRef.current !== 'idle') return;
                   handleToggleScreenShare();
                 }}
                 isSelf={Boolean(
@@ -4911,7 +5116,7 @@ export const MeetingRoomContent: React.FC<{
               <TouchableOpacity
                 style={[styles.controlItem, isScreenShareToggling && { opacity: 0.6 }]}
                 onPress={() => {
-                  if (isScreenShareTogglingRef.current) return;
+                  if (isScreenShareActionInFlight.current || screenShareLifecycleRef.current !== 'idle') return;
                   resetControlsTimer();
                   handleToggleScreenShare();
                 }}
