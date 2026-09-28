@@ -375,6 +375,12 @@ export const HomeScreen: React.FC = () => {
         throw new Error('Unable to generate room credentials');
       }
 
+      const hostSessionToken = data.host_session_token || meetingData.host_session_token;
+      if (hostSessionToken && code) {
+        const cleanCode = code.replace(/[\s-]/g, '');
+        storage.setItem(`host_session_${cleanCode}`, hostSessionToken);
+      }
+
       startMeeting({
         roomName,
         token,
@@ -383,6 +389,7 @@ export const HomeScreen: React.FC = () => {
         meetingCode: code,
         meetingTitle: meetingData.title || roomTitle,
         isHost: true,
+        hostSessionToken,
       });
     } catch (err: any) {
       Alert.alert(t('common.error'), err.message || 'Failed to start personal room');
@@ -394,14 +401,22 @@ export const HomeScreen: React.FC = () => {
   const handleJoinCreatedMeeting = () => {
     if (createdRoomData) {
       setShowCreateModal(false);
+      const hostSessionToken = createdRoomData.host_session_token || createdRoomData.meeting?.host_session_token;
+      const code = createdRoomData.meeting.meeting_code;
+      if (hostSessionToken && code) {
+        const cleanCode = code.replace(/[\s-]/g, '');
+        storage.setItem(`host_session_${cleanCode}`, hostSessionToken);
+      }
+
       startMeeting({
         roomName: createdRoomData.meeting.room_name,
         token: createdRoomData.token,
         serverUrl: createdRoomData.livekit_url,
         displayName: user?.name || currentUser?.name || 'IA',
-        meetingCode: createdRoomData.meeting.meeting_code,
+        meetingCode: code,
         meetingTitle: createdRoomData.meeting.title || createdRoomData.meeting.meeting_code,
         isHost: true,
+        hostSessionToken,
       });
     }
   };

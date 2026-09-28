@@ -45,7 +45,9 @@ export function useMeeting() {
 
       return response.data;
     } catch (err: any) {
-      console.error('API Error:', err?.response?.data || err.message);
+      if (err?.response?.data?.error_code !== 'AUTH_SESSION_REVOKED') {
+        console.warn('[MeetingAPI] Error:', err?.response?.data || err.message);
+      }
       const msg = err?.response?.data?.message || err.message;
       setState(prev => ({ ...prev, isConnecting: false, error: msg }));
       throw new Error(msg);

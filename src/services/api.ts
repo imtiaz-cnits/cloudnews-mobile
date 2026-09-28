@@ -11,14 +11,53 @@ export const apiClient = axios.create({
   timeout: 15000,
 });
 
-// Request Interceptor
-apiClient.interceptors.request.use(async (config) => {
-  const token = await storage.getItem(StorageKeys.AUTH_TOKEN);
-  if (token && config.headers) {
-    config.headers.Authorization = `Bearer ${token}`;
+import { resetToOnboarding } from '../navigation/navigationRef';
+
+export type AuthRevocationCallback = (message: string) => void;
+let authRevocationCallback: AuthRevocationCallback | null = null;
+let isHandlingRevocation = false;
+
+export const setAuthRevocationListener = (listener: AuthRevocationCallback | null) => {
+  authRevocationCallback = listener;
+};
+
+// Response Interceptor for handling 401 / session revocation
+apiClient.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 401) {
+      const errorCode = error.response?.data?.error_code;
+      const isSessionRevoked = errorCode === 'AUTH_SESSION_REVOKED';
+      const token = await storage.getItem(StorageKeys.AUTH_TOKEN);
+
+      // Only handle if we had an authenticated token that was invalidated
+      if (token && !isHandlingRevocation) {
+        isHandlingRevocation = true;
+        console.warn('[API] Auth session invalidated / revoked (401). errorCode:', errorCode);
+
+        setAuthToken(null);
+        await storage.removeItem(StorageKeys.AUTH_TOKEN);
+        await storage.removeItem(StorageKeys.USER_DATA);
+        await storage.removeItem(StorageKeys.IS_GUEST);
+
+        const alertMessage = isSessionRevoked
+          ? (error.response?.data?.message || 'This account was signed in on another device.')
+          : 'Your session has expired. Please log in again.';
+
+        if (authRevocationCallback) {
+          authRevocationCallback(alertMessage);
+        } else {
+          resetToOnboarding();
+        }
+
+        setTimeout(() => {
+          isHandlingRevocation = false;
+        }, 4000);
+      }
+    }
+    return Promise.reject(error);
   }
-  return config;
-});
+);
 
 // Response Interfaces
 export interface ApiResponse<T> {
@@ -47,6 +86,7 @@ export interface MeetingData {
   livekit_url?: string;
   title?: string;
   meeting?: any;
+  host_session_token?: string;
 }
 
 export interface ScheduledMeeting {
@@ -212,7 +252,8 @@ export const createMeeting = async (
 export const joinMeeting = async (
   code: string,
   passcode?: string,
-  name?: string
+  name?: string,
+  hostSessionToken?: string
 ): Promise<ApiResponse<MeetingData>> => {
   // Ensure the code is clean and URL-safe before sending
   const cleanDigits = code.replace(/[\s-]/g, '');
@@ -224,6 +265,9 @@ export const joinMeeting = async (
   if (name && name.trim()) {
     payload.participant_name = name.trim();
     payload.name = name.trim();
+  }
+  if (hostSessionToken) {
+    payload.host_session_token = hostSessionToken;
   }
   return (await apiClient.post(`/meetings/${cleanCode}/join`, payload)).data;
 };
@@ -237,13 +281,34 @@ export const validateMeeting = async (code: string, passcode?: string): Promise<
 };
 
 // 5. End Meeting (Host)
-export const endMeeting = async (code: string): Promise<ApiResponse<any>> => {
-  return (await apiClient.post(`/meetings/${code}/end`)).data;
+export const endMeeting = async (code: string, hostSessionToken?: string): Promise<ApiResponse<any>> => {
+  const cleanCode = code.replace(/[\s-]/g, '');
+  const payload: Record<string, any> = {};
+  if (hostSessionToken) {
+    payload.host_session_token = hostSessionToken;
+  }
+  return (await apiClient.post(`/meetings/${cleanCode}/end`, payload)).data;
 };
 
 // 6. Leave Meeting
-export const leaveMeeting = async (code: string): Promise<ApiResponse<any>> => {
-  return (await apiClient.post(`/meetings/${code}/leave`)).data;
+export const leaveMeeting = async (code: string, hostSessionToken?: string): Promise<ApiResponse<any>> => {
+  const cleanCode = code.replace(/[\s-]/g, '');
+  const payload: Record<string, any> = {};
+  if (hostSessionToken) {
+    payload.host_session_token = hostSessionToken;
+  }
+  return (await apiClient.post(`/meetings/${cleanCode}/leave`, payload)).data;
+};
+
+// 6b. Send Host Heartbeat
+export const sendHostHeartbeat = async (
+  code: string,
+  hostSessionToken: string
+): Promise<ApiResponse<{ expires_at: string; last_seen_at: string }>> => {
+  const cleanCode = code.replace(/[\s-]/g, '');
+  return (await apiClient.post(`/meetings/${cleanCode}/host/heartbeat`, {
+    host_session_token: hostSessionToken,
+  })).data;
 };
 
 // 7. Schedule Meeting
@@ -404,6 +469,7 @@ export default {
   validateMeeting,
   endMeeting,
   leaveMeeting,
+  sendHostHeartbeat,
   removeMeetingParticipant,
   scheduleMeeting,
   getScheduledMeetings,

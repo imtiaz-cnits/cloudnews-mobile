@@ -45,6 +45,7 @@ class MeetingForegroundService : Service() {
         }
 
         fun stopService(context: Context) {
+            android.util.Log.e("ScreenCapture-Diag", "[SCREEN_CAPTURE_STOP_CALLER] reason=MeetingForegroundService.stopService()", Throwable("MeetingForegroundService.stopService call stack"))
             val intent = Intent(context, MeetingForegroundService::class.java).apply {
                 action = ACTION_STOP
             }
@@ -76,6 +77,7 @@ class MeetingForegroundService : Service() {
          * any lingering "Screen sharing / You are currently sharing your screen" notifications.
          */
         fun stopMediaProjectionService(context: Context) {
+            android.util.Log.e("ScreenCapture-Diag", "[SCREEN_CAPTURE_STOP_CALLER] reason=MeetingForegroundService.stopMediaProjectionService()", Throwable("MeetingForegroundService.stopMediaProjectionService call stack"))
             // 1. Abort via WebRTC's MediaProjectionService.abort() helper
             try {
                 com.oney.WebRTCModule.MediaProjectionService.abort(context)
@@ -148,7 +150,7 @@ class MeetingForegroundService : Service() {
         createNotificationChannel()
 
         val launchIntent = Intent(this, MainActivity::class.java).apply {
-            this.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            this.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
         }
 
         val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

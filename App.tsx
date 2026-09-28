@@ -8,21 +8,22 @@ import { registerGlobals } from '@livekit/react-native';
 // Register LiveKit WebRTC globals before any components render
 registerGlobals();
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { View, ActivityIndicator, Alert } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { LanguageProvider } from './src/context/LanguageContext';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
-import { UserProvider } from './src/context/UserContext';
-import { MeetingProvider } from './src/context/MeetingContext';
+import { UserProvider, useUser } from './src/context/UserContext';
+import { MeetingProvider, useMeeting } from './src/context/MeetingContext';
 import { GlobalMeetingOverlay } from './src/components/meeting/GlobalMeetingOverlay';
 import AppNavigator from './src/navigation/AppNavigator';
 import { ENV } from './src/config/env';
 import { loadCustomFonts } from './src/utils/fontLoader';
 
-import { getStoredAuth } from './src/services/api';
+import { getStoredAuth, setAuthRevocationListener } from './src/services/api';
+import { resetToOnboarding } from './src/navigation/navigationRef';
 import { RootStackParamList } from './src/navigation/types';
 
 // Keep the splash screen visible while we fetch resources
@@ -31,6 +32,53 @@ SplashScreen.preventAutoHideAsync();
 const ThemedStatusBar: React.FC = () => {
   const { isDark } = useTheme();
   return <StatusBar style={isDark ? 'light' : 'dark'} />;
+};
+
+const AuthRevocationHandler: React.FC = () => {
+  const { logout } = useUser();
+  const { endMeeting, activeMeeting } = useMeeting();
+
+  const activeMeetingRef = useRef(activeMeeting);
+  activeMeetingRef.current = activeMeeting;
+  const endMeetingRef = useRef(endMeeting);
+  endMeetingRef.current = endMeeting;
+  const logoutRef = useRef(logout);
+  logoutRef.current = logout;
+
+  useEffect(() => {
+    setAuthRevocationListener(async (message: string) => {
+      console.warn('[AuthRevocationHandler] Session revoked, cleaning up meeting and auth state');
+
+      if (activeMeetingRef.current) {
+        try {
+          await endMeetingRef.current();
+        } catch (e) {
+          console.warn('[AuthRevocationHandler] Error ending meeting on revocation:', e);
+        }
+      }
+
+      try {
+        await logoutRef.current();
+      } catch (e) {
+        console.warn('[AuthRevocationHandler] Error logging out on revocation:', e);
+      }
+
+      resetToOnboarding();
+
+      Alert.alert(
+        'Account Signed Out',
+        message,
+        [{ text: 'OK' }],
+        { cancelable: false }
+      );
+    });
+
+    return () => {
+      setAuthRevocationListener(null);
+    };
+  }, []);
+
+  return null;
 };
 
 function App(): React.JSX.Element | null {
@@ -92,6 +140,7 @@ function App(): React.JSX.Element | null {
           <UserProvider>
             <MeetingProvider>
               <ThemedStatusBar />
+              <AuthRevocationHandler />
               <AppNavigator initialRouteName={initialRoute} />
               <GlobalMeetingOverlay />
             </MeetingProvider>

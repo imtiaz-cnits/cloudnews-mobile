@@ -39,6 +39,7 @@
       }
     },
     "android": {
+      "launchMode": "singleTask",
       "adaptiveIcon": {
         "foregroundImage": "./src/assets/images/logo.png",
         "backgroundColor": "#050B14"

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -8,13 +8,13 @@ import {
   Alert,
 } from 'react-native';
 import { LiveKitRoom } from '@livekit/react-native';
-import { Room, RoomConnectOptions, DisconnectReason } from 'livekit-client';
+import { DisconnectReason } from 'livekit-client';
 import { useMeeting } from '../../context/MeetingContext';
 import { initLiveKit, startAudioSession, stopAudioSession } from '../../services/livekit';
 import { MeetingRoomContent } from '../../screens/MeetingRoomScreen';
 import { FloatingPiPView } from './FloatingPiPView';
 import { endMeeting as endMeetingApi, leaveMeeting as leaveMeetingApi } from '../../services/api';
-import storage, { StorageKeys, MeetingSettings, DEFAULT_MEETING_SETTINGS } from '../../services/storage';
+import storage from '../../services/storage';
 
 // Ensure LiveKit WebRTC globals are ready
 initLiveKit();
@@ -53,74 +53,15 @@ export const GlobalMeetingOverlay: React.FC = () => {
     minimizeMeeting,
     maximizeMeeting,
     endMeeting,
+    room,
+    connectOptions,
   } = useMeeting();
 
   const [permissionsChecked, setPermissionsChecked] = useState(false);
   const [hasCameraPermission, setHasCameraPermission] = useState(true);
   const [hasAudioPermission, setHasAudioPermission] = useState(true);
-  const [meetingSettings, setMeetingSettings] = useState<MeetingSettings>(DEFAULT_MEETING_SETTINGS);
   const activeMeetingKeyRef = useRef<string | null>(null);
   const isUserLeavingRef = useRef(false);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const stored = await storage.getItem(StorageKeys.MEETING_SETTINGS);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          setMeetingSettings({ ...DEFAULT_MEETING_SETTINGS, ...parsed });
-        }
-      } catch (err) {
-        console.warn('[GlobalMeetingOverlay] Error reading meeting settings:', err);
-      }
-    })();
-  }, [activeMeeting]);
-
-  const videoPreset = useMemo(() => {
-    const is4K = meetingSettings.videoQuality === '4k' && Boolean(activeMeeting?.isHost);
-    const is720p = meetingSettings.videoQuality === '720p';
-
-    if (is4K) {
-      return {
-        capture: {
-          width: 3840,
-          height: 2160,
-          frameRate: meetingSettings.frameRate,
-        },
-        encoding: {
-          maxBitrate: 8_000_000,
-          maxFramerate: meetingSettings.frameRate,
-        },
-      };
-    }
-
-    if (is720p) {
-      return {
-        capture: {
-          width: 1280,
-          height: 720,
-          frameRate: meetingSettings.frameRate,
-        },
-        encoding: {
-          maxBitrate: 1_800_000,
-          maxFramerate: meetingSettings.frameRate,
-        },
-      };
-    }
-
-    // Default: 1080p Full HD (2.5 - 3.5 Mbps)
-    return {
-      capture: {
-        width: 1920,
-        height: 1080,
-        frameRate: meetingSettings.frameRate,
-      },
-      encoding: {
-        maxBitrate: 3_500_000,
-        maxFramerate: meetingSettings.frameRate,
-      },
-    };
-  }, [meetingSettings, activeMeeting?.isHost]);
 
   // Audio session and permission initialization per unique meeting session
   useEffect(() => {
@@ -165,16 +106,13 @@ export const GlobalMeetingOverlay: React.FC = () => {
     console.warn('[GlobalMeetingOverlay] LiveKit connection event (auto-recovering):', e.message);
   }, []);
 
-  // Resilient disconnect handling: Only end meeting on explicit leave or room teardown
+  // UI ejection handling: Only end meeting on explicit leave or room teardown
   const handleDisconnected = useCallback((reason?: DisconnectReason) => {
-    console.log('[GlobalMeetingOverlay] Room disconnected event with reason:', reason);
+    if (__DEV__) console.log('[GlobalMeetingOverlay] Room disconnected event with reason:', reason);
 
     // Host Absolute Immunity Guard: The host must NEVER be auto-ejected from their own meeting!
-    // Disconnection reasons like CLIENT_INITIATED (caused by track unpublish / OS screen share stop),
-    // transient socket issues, or renegotiation glitches must NEVER call endMeeting() for the host.
-    // The host can only leave/end by explicitly pressing "End Meeting" in the UI.
     if (activeMeeting?.isHost) {
-      console.log('[GlobalMeetingOverlay] Host session preserved despite disconnect event; keeping session intact for host.');
+      if (__DEV__) console.log('[GlobalMeetingOverlay] Host session preserved despite disconnect event.');
       return;
     }
 
@@ -198,69 +136,20 @@ export const GlobalMeetingOverlay: React.FC = () => {
         );
       }
       endMeeting();
-    } else {
-      console.warn('[GlobalMeetingOverlay] Transient disconnect; keeping session intact for auto-reconnect:', reason);
     }
   }, [activeMeeting?.isHost, endMeeting]);
-
-  // Memoized connection options to prevent re-triggering connect effects
-  const connectOptions = useMemo<RoomConnectOptions>(() => ({
-    autoSubscribe: true,
-    peerConnectionTimeout: 30000,
-    maxRetries: 10,
-    websocketTimeout: 20000,
-  }), []);
-
-  // Stable single Room instance: strictly keyed to the unique meeting credentials
-  const room = useMemo(() => {
-    if (!activeMeeting?.token || !activeMeeting?.serverUrl) return undefined;
-    initLiveKit();
-    return new Room({
-      adaptiveStream: false,
-      dynacast: true,
-      stopLocalTrackOnUnpublish: false,
-      audioCaptureDefaults: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      videoCaptureDefaults: {
-        resolution: videoPreset.capture,
-      },
-      publishDefaults: {
-        videoCodec: 'h264',
-        backupCodec: { codec: 'vp8' },
-        videoEncoding: videoPreset.encoding,
-        screenShareEncoding: {
-          maxBitrate: 3_000_000,
-          maxFramerate: 15,
-        },
-        dtx: true,
-        red: true,
-      },
-    });
-    // Intentionally omit videoPreset from dependencies to avoid recreating the Room instance mid-call
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeMeeting?.roomName, activeMeeting?.token]);
-
-  // Clean room disconnection on session termination
-  useEffect(() => {
-    return () => {
-      if (room) {
-        room.disconnect().catch(() => {});
-      }
-    };
-  }, [room]);
 
   const handleFloatingLeave = useCallback(async () => {
     isUserLeavingRef.current = true;
     if (activeMeeting?.isHost && activeMeeting.meetingCode) {
       try {
-        await endMeetingApi(activeMeeting.meetingCode);
+        await endMeetingApi(activeMeeting.meetingCode, activeMeeting.hostSessionToken);
+        const cleanCode = activeMeeting.meetingCode.replace(/[\s-]/g, '');
+        await storage.removeItem(`host_session_${cleanCode}`);
       } catch {}
     } else if (activeMeeting?.meetingCode) {
       try {
-        await leaveMeetingApi(activeMeeting.meetingCode);
+        await leaveMeetingApi(activeMeeting.meetingCode, activeMeeting.hostSessionToken);
       } catch {}
     }
     endMeeting();
@@ -277,9 +166,6 @@ export const GlobalMeetingOverlay: React.FC = () => {
       </View>
     );
   }
-
-  const shouldEnableAudio = hasAudioPermission && !activeMeeting.muteAudio;
-  const shouldEnableVideo = hasCameraPermission && !activeMeeting.muteVideo;
 
   return (
     <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
@@ -313,6 +199,7 @@ export const GlobalMeetingOverlay: React.FC = () => {
             meetingTitle={activeMeeting.meetingTitle}
             isHostParam={activeMeeting.isHost}
             isGuest={activeMeeting.isGuest}
+            hostSessionToken={activeMeeting.hostSessionToken}
             onLeave={endMeeting}
             onMinimize={minimizeMeeting}
             isMinimized={isMinimized}

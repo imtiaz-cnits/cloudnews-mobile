@@ -1,9 +1,14 @@
 package com.cloudnews.mobile
 
+import android.app.ActivityManager
+import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.WindowManager
+import java.lang.ref.WeakReference
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -13,16 +18,137 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
+
+  companion object {
+      private const val TAG = "MainActivity-Diag"
+
+      @Volatile
+      private var activeActivityRef: WeakReference<MainActivity>? = null
+
+      fun getActiveActivity(): MainActivity? = activeActivityRef?.get()
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
-    // Set the theme to AppTheme BEFORE onCreate to support
-    // coloring the background, status bar, and navigation bar.
-    // This is required for expo-splash-screen.
-    setTheme(R.style.AppTheme);
+    val currentTaskId = taskId
+    val instanceId = System.identityHashCode(this)
+    val intentAction = intent?.action
+    val intentFlags = intent?.flags?.let { Integer.toHexString(it) } ?: "none"
+
+    Log.d(
+        TAG,
+        "[ON_CREATE] (NEW_ACTIVITY) taskId=$currentTaskId, instance=$instanceId, action=$intentAction, flags=0x$intentFlags, savedInstanceState=${savedInstanceState != null}"
+    )
+
+    // Set the theme to AppTheme BEFORE super.onCreate to support
+    // coloring the background, status bar, and navigation bar for expo-splash-screen.
+    setTheme(R.style.AppTheme)
+
+    // CRITICAL ANDROID LIFECYCLE RULE:
+    // super.onCreate MUST ALWAYS be called to satisfy Android's internal mCalled requirement.
+    // If super.onCreate is skipped before finish()/return, Android throws SuperNotCalledException
+    // resulting in an immediate process crash ("--------- beginning of crash").
     super.onCreate(null)
 
     // Explicitly guarantee FLAG_SECURE is cleared so that Cloud News
     // app screens, controls, and menus are never blacked out during screen sharing.
     window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+
+    // Check 1: Classic Android launcher bug where launching from Home/Launcher creates a duplicate activity in same task
+    if (!isTaskRoot) {
+        val launchIntent = intent
+        val action = launchIntent?.action
+        if (launchIntent != null && launchIntent.hasCategory(Intent.CATEGORY_LAUNCHER) && Intent.ACTION_MAIN == action) {
+            Log.w(
+                TAG,
+                "[DUPLICATE_PREVENTED_NOT_TASK_ROOT] Finishing duplicate MainActivity instance created by launcher: taskId=$currentTaskId, instance=$instanceId"
+            )
+            finish()
+            return
+        }
+    }
+
+    // Check 2: Cross-task duplication check (e.g. Activity is in PiP pinned stack and launcher/Recents starts a new MainActivity in standard stack)
+    val existingActivity = activeActivityRef?.get()
+    if (existingActivity != null && existingActivity != this && !existingActivity.isFinishing && !existingActivity.isDestroyed) {
+        val existingTaskId = existingActivity.taskId
+        val existingInstanceId = System.identityHashCode(existingActivity)
+        val isExistingInPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) existingActivity.isInPictureInPictureMode else false
+
+        Log.w(
+            TAG,
+            "[DUPLICATE_ACTIVITY_DETECTED] A new MainActivity instance ($instanceId in task $currentTaskId) was spawned while active instance ($existingInstanceId in task $existingTaskId, inPip=$isExistingInPip) is alive! Performing task handoff..."
+        )
+
+        // 1. Move the existing PiP/meeting task to the front and request fullscreen expansion
+        try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            am?.moveTaskToFront(existingTaskId, ActivityManager.MOVE_TASK_WITH_HOME)
+            Log.d(TAG, "[TASK_HANDOFF_SUCCESS] moveTaskToFront requested for existing task $existingTaskId")
+        } catch (e: Throwable) {
+            Log.e(TAG, "[TASK_HANDOFF_ERROR] moveTaskToFront failed: ${e.message}", e)
+        }
+
+        // 2. Deliver the incoming intent to the existing activity so deep links or actions are preserved
+        val incomingIntent = intent
+        if (incomingIntent != null) {
+            try {
+                existingActivity.runOnUiThread {
+                    try {
+                        existingActivity.onNewIntent(incomingIntent)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "[TASK_HANDOFF_INTENT] onNewIntent dispatch error: ${t.message}")
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "[TASK_HANDOFF_DISPATCH] runOnUiThread error: ${t.message}")
+            }
+        }
+
+        // 3. Cleanly finish and remove the duplicate temporary task from Recents without touching the active session
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            finishAndRemoveTask()
+        } else {
+            finish()
+        }
+        return
+    }
+
+    // Set this instance as the single active activity
+    activeActivityRef = WeakReference(this)
+  }
+
+  /**
+   * Called when an existing singleTask activity receives a new intent
+   * (e.g. from launcher, Recent Apps, notifications, or deep links).
+   */
+  override fun onNewIntent(intent: Intent?) {
+      val currentTaskId = taskId
+      val instanceId = System.identityHashCode(this)
+      val intentAction = intent?.action
+      val intentFlags = intent?.flags?.let { Integer.toHexString(it) } ?: "none"
+      val inPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInPictureInPictureMode else false
+
+      Log.d(
+          TAG,
+          "[ON_NEW_INTENT] (REUSING_EXISTING_ACTIVITY) taskId=$currentTaskId, instance=$instanceId, action=$intentAction, flags=0x$intentFlags, inPip=$inPip"
+      )
+
+      super.onNewIntent(intent)
+      setIntent(intent)
+      // Note: Do NOT call startActivity targeting this from inside onNewIntent!
+      // Android is already in the process of delivering the intent and reordering/expanding the window.
+  }
+
+  override fun onResume() {
+      super.onResume()
+      val inPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInPictureInPictureMode else false
+      Log.d(TAG, "[ON_RESUME] taskId=$taskId, instance=${System.identityHashCode(this)}, inPip=$inPip")
+  }
+
+  override fun onPause() {
+      super.onPause()
+      val inPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInPictureInPictureMode else false
+      Log.d(TAG, "[ON_PAUSE] taskId=$taskId, instance=${System.identityHashCode(this)}, inPip=$inPip")
   }
 
   /**
@@ -53,7 +179,9 @@ class MainActivity : ReactActivity() {
    */
   override fun onUserLeaveHint() {
       super.onUserLeaveHint()
-      if (PictureInPictureModule.canEnterPip()) {
+      val canPip = PictureInPictureModule.canEnterPip()
+      Log.d(TAG, "[ON_USER_LEAVE_HINT] taskId=$taskId, instance=${System.identityHashCode(this)}, canEnterPip=$canPip")
+      if (canPip) {
           PictureInPictureModule.enterPipMode(this)
       }
   }
@@ -66,6 +194,10 @@ class MainActivity : ReactActivity() {
       newConfig: Configuration
   ) {
       super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+      Log.d(
+          TAG,
+          "[ON_PIP_MODE_CHANGED] taskId=$taskId, instance=${System.identityHashCode(this)}, isInPictureInPictureMode=$isInPictureInPictureMode"
+      )
       PictureInPictureModule.notifyPipModeChanged(isInPictureInPictureMode)
   }
 
@@ -89,12 +221,16 @@ class MainActivity : ReactActivity() {
   }
 
   override fun onDestroy() {
-      try {
-          if (isFinishing) {
-              MeetingForegroundService.stopService(this)
+      Log.d(TAG, "[ON_DESTROY] taskId=$taskId, instance=${System.identityHashCode(this)}, isFinishing=$isFinishing")
+      if (activeActivityRef?.get() == this) {
+          activeActivityRef = null
+          try {
+              if (isFinishing) {
+                  MeetingForegroundService.stopService(this)
+              }
+          } catch (e: Exception) {
+              e.printStackTrace()
           }
-      } catch (e: Exception) {
-          e.printStackTrace()
       }
       super.onDestroy()
   }

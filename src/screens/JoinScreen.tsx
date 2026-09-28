@@ -405,11 +405,19 @@ export const JoinScreen: React.FC = () => {
       // Save display name preference locally
       await storage.setItem('cloudnews_last_guest_name', effectiveDisplayName);
 
+      // Retrieve saved host session token if this user was hosting this meeting previously (app restart recovery)
+      const savedHostSessionToken = await storage.getItem(`host_session_${cleanCode}`);
+
       // 2. Call backend join endpoint
       console.log('[Join] Joining room with code:', cleanCode);
       let meetingRes;
       try {
-        meetingRes = await joinMeeting(cleanCode, passcode.trim() || undefined, effectiveDisplayName);
+        meetingRes = await joinMeeting(
+          cleanCode,
+          passcode.trim() || undefined,
+          effectiveDisplayName,
+          savedHostSessionToken || undefined
+        );
       } catch (joinErr: any) {
         // Handle token expiration: re-login guest if guest; if host alert cleanly
         if (joinErr.response?.status === 401) {
@@ -421,7 +429,12 @@ export const JoinScreen: React.FC = () => {
             if (freshGuest.success && freshGuest.data?.token) {
               await storage.setItem(StorageKeys.AUTH_TOKEN, freshGuest.data.token);
               await storage.setItem(StorageKeys.IS_GUEST, 'true');
-              meetingRes = await joinMeeting(cleanCode, passcode.trim() || undefined, effectiveDisplayName);
+              meetingRes = await joinMeeting(
+                cleanCode,
+                passcode.trim() || undefined,
+                effectiveDisplayName,
+                savedHostSessionToken || undefined
+              );
             } else {
               throw joinErr;
             }
@@ -459,6 +472,11 @@ export const JoinScreen: React.FC = () => {
           meetingRes.data.meeting_code ||
           cleanCode;
 
+        const hostSessionToken = meetingRes.data.host_session_token || savedHostSessionToken;
+        if (hostSessionToken && !isGuestJoin && meetingRes.data.is_host) {
+          await storage.setItem(`host_session_${cleanCode}`, hostSessionToken);
+        }
+
         startMeeting({
           roomName: resolvedRoomName,
           token: meetingRes.data.livekit_token,
@@ -470,6 +488,7 @@ export const JoinScreen: React.FC = () => {
           isHost: isGuestJoin ? false : Boolean(meetingRes.data.is_host),
           muteAudio: muteAudio,
           muteVideo: muteVideo,
+          hostSessionToken,
         });
 
         if (isGuestJoin) {
@@ -486,6 +505,11 @@ export const JoinScreen: React.FC = () => {
         );
       }
     } catch (error: any) {
+      if (error.response?.data?.code === 'HOST_ALREADY_IN_MEETING') {
+        const msg = error.response.data.message || 'This account is already hosting another meeting.';
+        Alert.alert(t('common.error'), msg);
+        return;
+      }
       if (
         error.response?.data?.code === 'WAITING_FOR_HOST' ||
         error.response?.data?.status === 'waiting_for_host'

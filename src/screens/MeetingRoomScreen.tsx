@@ -10,6 +10,8 @@ import {
 import { useNavigation, useRoute } from '@react-navigation/native';
 import {
   Track,
+  TrackEvent,
+  LocalVideoTrack,
   ConnectionState,
   Participant,
   RoomEvent,
@@ -17,6 +19,10 @@ import {
   DataPacket_Kind,
   facingModeFromLocalTrack,
   DisconnectReason,
+  TrackPublishOptions,
+  RemoteParticipant,
+  RemoteTrack,
+  RemoteTrackPublication,
 } from 'livekit-client';
 import * as Clipboard from 'expo-clipboard';
 import {
@@ -104,9 +110,11 @@ import {
   User,
   endMeeting,
   leaveMeeting,
+  sendHostHeartbeat,
   removeMeetingParticipant,
   getMeetingMessages,
   sendMeetingMessage,
+  normalizeMeetingCode,
 } from '../services/api';
 import { useTranslation } from '../hooks/useTranslation';
 import storage, { StorageKeys } from '../services/storage';
@@ -245,6 +253,10 @@ const ParticipantCard: React.FC<{
     const [isScreenShareEnabled, setIsScreenShareEnabled] = useState(Boolean(participant.isScreenShareEnabled));
 
     useEffect(() => {
+      console.log(`[ParticipantCard-Diagnostic] Mounted for ${participant.identity} (isLocal: ${isLocal})`);
+    }, [participant.identity, isLocal]);
+
+    useEffect(() => {
       const onUpdate = () => {
         setIsCameraEnabled(participant.isCameraEnabled);
         setIsMicEnabled(participant.isMicrophoneEnabled);
@@ -368,58 +380,10 @@ const ParticipantCard: React.FC<{
           isSingleOrFullScreen
             ? styles.fullScreenCard
             : (isSpeaking && styles.activeSpeakerCard),
-          screenShareTrack?.publication?.track && { backgroundColor: 'transparent' },
           style,
         ]}
       >
-        {screenShareTrack?.publication?.track ? (
-          <>
-            <VideoTrack
-              trackRef={screenShareTrack}
-              style={styles.cardVideo}
-              objectFit="contain"
-              mirror={false}
-              zOrder={1}
-            />
-            {/* Bottom translucent name pill so participant name & mic are always visible on video */}
-            <View style={[styles.videoNamePill, { bottom: density === 'ultra-compact' ? 5 : 8, left: density === 'ultra-compact' ? 5 : 8 }]}>
-              <MonitorUp color="#00A8FF" size={avatarMetrics.micSize} style={{ marginRight: 4 }} />
-              <Text style={[styles.videoNameText, { fontSize: avatarMetrics.nameSize }]} numberOfLines={1}>
-                {displayName}
-              </Text>
-              {isMicEnabled ? (
-                <Mic color="#10b981" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
-              ) : (
-                <MicOff color="#ef4444" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
-              )}
-            </View>
-          </>
-        ) : isLocal && (isScreenShareEnabled || screenShareTrack) ? (
-          <View style={styles.gridScreenShareLocalPlaceholder}>
-            <LinearGradient
-              colors={['rgba(0, 168, 255, 0.12)', 'rgba(0, 60, 140, 0.28)']}
-              style={StyleSheet.absoluteFill}
-            />
-            <View style={styles.gridScreenShareIconBadge}>
-              <Monitor color="#00A8FF" size={avatarMetrics.circleSize ? Math.floor(avatarMetrics.circleSize * 0.4) : 22} />
-            </View>
-            <Text style={[styles.gridScreenShareLocalTitle, { fontSize: avatarMetrics.nameSize }]} numberOfLines={1}>
-              {t('meeting.sharingYourScreenTitle') || 'You are sharing your screen'}
-            </Text>
-            {/* Bottom translucent name pill */}
-            <View style={[styles.videoNamePill, { bottom: density === 'ultra-compact' ? 5 : 8, left: density === 'ultra-compact' ? 5 : 8 }]}>
-              <MonitorUp color="#00A8FF" size={avatarMetrics.micSize} style={{ marginRight: 4 }} />
-              <Text style={[styles.videoNameText, { fontSize: avatarMetrics.nameSize }]} numberOfLines={1}>
-                {displayName}
-              </Text>
-              {isMicEnabled ? (
-                <Mic color="#10b981" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
-              ) : (
-                <MicOff color="#ef4444" size={avatarMetrics.micSize} style={{ marginLeft: 4 }} />
-              )}
-            </View>
-          </View>
-        ) : isCameraEnabled && cameraTrack?.publication?.track ? (
+        {isCameraEnabled && cameraTrack?.publication?.track ? (
           <>
             <VideoTrack
               trackRef={cameraTrack}
@@ -612,7 +576,7 @@ const ParticipantCard: React.FC<{
     );
   };
 
-const ScreenShareView: React.FC<{
+const ScreenShareStage: React.FC<{
   track: any;
   insets?: { top: number; bottom: number; left: number; right: number };
   showControls?: boolean;
@@ -643,45 +607,83 @@ const ScreenShareView: React.FC<{
   );
 
   const presenter = track?.participant;
-  const cameraTracks = useTracks([Track.Source.Camera], { onlySubscribed: false });
-  const presenterCameraTrack = cameraTracks.find(
-    t => t.participant?.identity === presenter?.identity && t.source === Track.Source.Camera
+  const presenterName = presenter?.name || presenter?.identity || 'Participant';
+
+  const [subscribedTrack, setSubscribedTrack] = useState<RemoteTrack | LocalVideoTrack | undefined>(
+    track?.publication?.track
+  );
+  const [isSubscribed, setIsSubscribed] = useState<boolean>(
+    Boolean(track?.publication?.isSubscribed && track?.publication?.track)
   );
 
-  const [isSpeaking, setIsSpeaking] = useState(presenter?.isSpeaking ?? false);
-  const [isMicEnabled, setIsMicEnabled] = useState(presenter?.isMicrophoneEnabled ?? false);
-  const [isCameraEnabled, setIsCameraEnabled] = useState(presenter?.isCameraEnabled ?? false);
-  const [isPresenterTileCollapsed, setIsPresenterTileCollapsed] = useState(false);
-
   useEffect(() => {
-    if (!presenter) return;
-    const onUpdate = () => {
-      setIsSpeaking(presenter.isSpeaking);
-      setIsMicEnabled(presenter.isMicrophoneEnabled);
-      setIsCameraEnabled(presenter.isCameraEnabled);
+    const pub = track?.publication;
+    const participant = track?.participant;
+
+    const syncTrackState = () => {
+      const currentTrack = pub?.track;
+      const ready = Boolean(pub?.isSubscribed && currentTrack);
+      setSubscribedTrack(currentTrack);
+      setIsSubscribed(ready);
+
+      if (__DEV__ && ready) {
+        console.log('[ScreenShare-Diag:SCREEN_SHARE_TRACK_AVAILABLE]', {
+          identity: participant?.identity,
+          trackSid: pub?.trackSid,
+          isSubscribed: Boolean(pub?.isSubscribed),
+          hasTrack: Boolean(currentTrack),
+          mediaStreamTrackReady: Boolean((currentTrack as any)?.mediaStreamTrack),
+        });
+      }
     };
-    presenter.on('isSpeakingChanged', onUpdate);
-    presenter.on('trackMuted', onUpdate);
-    presenter.on('trackUnmuted', onUpdate);
-    presenter.on('trackPublished', onUpdate);
-    presenter.on('trackUnpublished', onUpdate);
+
+    syncTrackState();
+
+    if (!pub) return;
+
+    pub.on(TrackEvent.Subscribed, syncTrackState);
+    pub.on(TrackEvent.Unsubscribed, syncTrackState);
+    pub.on(TrackEvent.SubscriptionStatusChanged, syncTrackState);
+
+    if (participant) {
+      participant.on(ParticipantEvent.TrackSubscribed, syncTrackState);
+      participant.on(ParticipantEvent.TrackUnsubscribed, syncTrackState);
+    }
 
     return () => {
-      presenter.off('isSpeakingChanged', onUpdate);
-      presenter.off('trackMuted', onUpdate);
-      presenter.off('trackUnmuted', onUpdate);
-      presenter.off('trackPublished', onUpdate);
-      presenter.off('trackUnpublished', onUpdate);
+      pub.off(TrackEvent.Subscribed, syncTrackState);
+      pub.off(TrackEvent.Unsubscribed, syncTrackState);
+      pub.off(TrackEvent.SubscriptionStatusChanged, syncTrackState);
+      if (participant) {
+        participant.off(ParticipantEvent.TrackSubscribed, syncTrackState);
+        participant.off(ParticipantEvent.TrackUnsubscribed, syncTrackState);
+      }
     };
-  }, [presenter]);
+  }, [track?.publication, track?.participant]);
 
-  const presenterName = presenter?.name || presenter?.identity || 'Participant';
-  const isPresenterHost = checkIsParticipantHost(presenter);
+  useEffect(() => {
+    console.log('[ScreenShare-Diag:SCREEN_SHARE_STAGE_MOUNTED]', {
+      identity: presenter?.identity,
+      isLocal: presenter?.isLocal,
+      isSelf,
+      publicationExists: Boolean(track?.publication),
+      isSubscribed: Boolean((track?.publication as any)?.isSubscribed),
+      hasTrack: Boolean(track?.publication?.track),
+      trackSid: track?.publication?.trackSid,
+      source: track?.source,
+    });
+  }, [track?.publication?.trackSid, isSelf, presenter?.identity]);
+
+  const isSubscribedAndReady = Boolean(
+    isSubscribed && subscribedTrack
+  );
+
+
 
   return (
-    <View style={[styles.fullScreenCard, !isSelf && { backgroundColor: 'transparent' }]}>
+    <View style={styles.screenShareStageContainer}>
       {isSelf ? (
-        /* Dedicated Presenter View when local user (Host or Guest) is sharing screen.
+        /* Dedicated Broadcaster View when local user is sharing screen.
            CRITICAL: Do NOT render VideoTrack here to prevent infinite recursive screen mirroring! */
         <TouchableOpacity
           activeOpacity={1}
@@ -741,17 +743,29 @@ const ScreenShareView: React.FC<{
           )}
         </TouchableOpacity>
       ) : (
-        /* Remote Screen Share View: Displays the video stream shared by other participants */
+        /* Remote Screen Share Stage: Displays the video stream shared by other participants */
         <>
-          <VideoTrack
-            trackRef={track}
-            style={styles.cardVideo}
-            objectFit="contain"
-            mirror={false}
-            zOrder={1}
-          />
-          {!track?.publication?.track && (
-            <View style={[styles.screenShareLoadingOverlay, { zIndex: 0 }]} pointerEvents="none">
+          {isSubscribedAndReady ? (
+            <View
+              style={styles.fullStageVideo}
+              onLayout={(e: any) => {
+                console.log('[ScreenShare-Diag:SCREEN_SHARE_STAGE_LAYOUT_READY]', {
+                  layout: e?.nativeEvent?.layout,
+                  trackSid: track?.publication?.trackSid,
+                  identity: presenter?.identity,
+                });
+              }}
+            >
+              <VideoTrack
+                trackRef={track}
+                style={styles.fullStageVideo}
+                objectFit="contain"
+                mirror={false}
+                zOrder={1}
+              />
+            </View>
+          ) : (
+            <View style={styles.screenShareLoadingOverlay} pointerEvents="none">
               <ActivityIndicator size="large" color="#00A8FF" style={{ marginBottom: 12 }} />
               <Text style={styles.screenShareLoadingText}>
                 {t('meeting.connectingScreenShare') || 'Connecting to screen share...'}
@@ -763,87 +777,6 @@ const ScreenShareView: React.FC<{
             onPress={onPress}
             style={[StyleSheet.absoluteFill, { zIndex: 2 }]}
           />
-
-          {/* Floating Presenter Participant Card Overlay on the Screen Share */}
-          {presenter && (
-            <Animated.View
-              style={[
-                styles.floatingPresenterCard,
-                {
-                  bottom: (insets?.bottom ?? 0) + (showControls ? 86 : 24),
-                  borderColor: isSpeaking ? '#10b981' : 'rgba(255, 255, 255, 0.25)',
-                },
-                isPresenterTileCollapsed && styles.floatingPresenterCardCollapsed,
-              ]}
-            >
-              <TouchableOpacity
-                activeOpacity={0.9}
-                onPress={() => setIsPresenterTileCollapsed(prev => !prev)}
-                style={styles.floatingPresenterTouchable}
-              >
-                {isPresenterTileCollapsed ? (
-                  <View style={styles.floatingPresenterCollapsedContent}>
-                    <View style={[styles.miniAvatar, isSpeaking && styles.miniAvatarSpeaking]}>
-                      <Text style={styles.miniAvatarText}>
-                        {getInitials(presenterName)}
-                      </Text>
-                    </View>
-                    <Text style={styles.floatingPresenterCollapsedName} numberOfLines={1}>
-                      {presenterName}
-                    </Text>
-                    {isMicEnabled ? (
-                      <Mic color="#10b981" size={12} />
-                    ) : (
-                      <MicOff color="#ef4444" size={12} />
-                    )}
-                  </View>
-                ) : (
-                  <>
-                    <View style={styles.floatingPresenterMediaBox}>
-                      {isCameraEnabled && presenterCameraTrack?.publication?.track ? (
-                        <VideoTrack
-                          trackRef={presenterCameraTrack}
-                          style={styles.floatingPresenterVideo}
-                          objectFit="cover"
-                        />
-                      ) : (
-                        <View style={styles.floatingPresenterAvatarBox}>
-                          <View style={[styles.floatingPresenterAvatarCircle, isSpeaking && styles.avatarCircleSpeaking]}>
-                            <Text style={styles.floatingPresenterAvatarText}>
-                              {getInitials(presenterName)}
-                            </Text>
-                          </View>
-                        </View>
-                      )}
-
-                      {/* Presenter Role Badge */}
-                      <View style={[styles.floatingPresenterRoleBadge, isPresenterHost && styles.floatingPresenterHostBadge]}>
-                        <Text style={styles.floatingPresenterRoleText}>
-                          {isPresenterHost ? 'HOST' : 'GUEST'}
-                        </Text>
-                      </View>
-
-                      {/* Presenter Mic Status Badge */}
-                      <View style={styles.floatingPresenterMicBadge}>
-                        {isMicEnabled ? (
-                          <Mic color="#10b981" size={11} />
-                        ) : (
-                          <MicOff color="#ef4444" size={11} />
-                        )}
-                      </View>
-                    </View>
-
-                    {/* Presenter Name Banner */}
-                    <View style={styles.floatingPresenterNameBanner}>
-                      <Text style={styles.floatingPresenterNameText} numberOfLines={1}>
-                        {presenterName}
-                      </Text>
-                    </View>
-                  </>
-                )}
-              </TouchableOpacity>
-            </Animated.View>
-          )}
         </>
       )}
 
@@ -851,7 +784,7 @@ const ScreenShareView: React.FC<{
       <View
         style={[
           styles.cardTopRow,
-          { top: (insets?.top ?? 0) + (showControls ? 64 : 16) },
+          { top: showControls ? 64 : 16 },
         ]}
         pointerEvents="box-none"
       >
@@ -870,7 +803,7 @@ const ScreenShareView: React.FC<{
             <View style={styles.screenShareBadge}>
               <MonitorUp color="#00A8FF" size={16} style={{ marginRight: 6 }} />
               <Text style={styles.screenShareBadgeText}>
-                {`${t('meeting.share')} (${track.participant?.name || track.participant?.identity || 'Participant'})`}
+                {`${t('meeting.share')} (${presenterName})`}
               </Text>
             </View>
           )}
@@ -896,6 +829,8 @@ const ScreenShareView: React.FC<{
     </View>
   );
 };
+
+const ScreenShareView = ScreenShareStage;
 
 const formatMeetingCode = (rawCode?: string): string => {
   if (!rawCode) return '';
@@ -1215,6 +1150,7 @@ export const MeetingRoomContent: React.FC<{
   meetingTitle?: string;
   isHostParam?: boolean;
   isGuest?: boolean;
+  hostSessionToken?: string;
   onLeave: () => void;
   onMinimize?: () => void;
   isMinimized?: boolean;
@@ -1228,6 +1164,7 @@ export const MeetingRoomContent: React.FC<{
   meetingTitle,
   isHostParam,
   isGuest,
+  hostSessionToken,
   onLeave,
   onMinimize,
   isMinimized = false,
@@ -1241,22 +1178,50 @@ export const MeetingRoomContent: React.FC<{
   const room = useRoomContext();
   const { t } = useTranslation();
 
+  const hostSessionTokenRef = useRef<string | null>(hostSessionToken || null);
+  useEffect(() => {
+    if (hostSessionToken) {
+      hostSessionTokenRef.current = hostSessionToken;
+    }
+  }, [hostSessionToken]);
+
+  // Persist host session token so app kill/restart can recover it
+  useEffect(() => {
+    if (isHostParam && hostSessionTokenRef.current && meetingCode) {
+      const cleanCode = meetingCode.replace(/[\s-]/g, '');
+      storage.setItem(`host_session_${cleanCode}`, hostSessionTokenRef.current);
+    }
+  }, [isHostParam, meetingCode]);
+
+  // Host session heartbeat (25s interval)
+  useEffect(() => {
+    if (!isHostParam || !meetingCode) return;
+
+    const interval = setInterval(async () => {
+      const token = hostSessionTokenRef.current;
+      if (!token) return;
+      try {
+        await sendHostHeartbeat(meetingCode, token);
+      } catch (err: any) {
+        console.warn('[MeetingRoomScreen] Host heartbeat warning:', err?.response?.data || err?.message);
+      }
+    }, 25000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [isHostParam, meetingCode]);
+
+  const { activeMeeting, isReconnectingUI, manualReconnect } = useMeeting();
   const [isNativePip, setIsNativePip] = useState<boolean>(false);
-  const [isReconnecting, setIsReconnecting] = useState<boolean>(false);
   const isUserLeavingRef = useRef<boolean>(false);
 
-  // Subscribe to LiveKit room reconnection lifecycle
+  // Subscribe to LiveKit room reconnection to re-sync local audio/video publish state if active
   useEffect(() => {
     if (!room) return;
 
-    const handleReconnecting = () => {
-      console.log('[MeetingRoomScreen] Network interruption detected, LiveKit is reconnecting...');
-      setIsReconnecting(true);
-    };
-
     const handleReconnected = () => {
-      console.log('[MeetingRoomScreen] Successfully reconnected to the room');
-      setIsReconnecting(false);
+      if (__DEV__) console.log('[MeetingRoomScreen] Successfully reconnected to room:', room.name);
 
       // Re-sync local audio/video publish state if active
       const lp = room.localParticipant;
@@ -1270,11 +1235,9 @@ export const MeetingRoomContent: React.FC<{
       }
     };
 
-    room.on(RoomEvent.Reconnecting, handleReconnecting);
     room.on(RoomEvent.Reconnected, handleReconnected);
 
     return () => {
-      room.off(RoomEvent.Reconnecting, handleReconnecting);
       room.off(RoomEvent.Reconnected, handleReconnected);
     };
   }, [room]);
@@ -1346,6 +1309,7 @@ export const MeetingRoomContent: React.FC<{
   const isScreenShareToggling = isShareButtonBusy;
   const isScreenShareTogglingRef = isTogglingScreenShareRef;
   const isStartingScreenShareRef = useRef(false);
+  const isScreenShareActionInFlight = useRef(false);
   const screenCapturePickerRef = useRef<any>(null);
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
 
@@ -1544,7 +1508,10 @@ export const MeetingRoomContent: React.FC<{
   }, [showControls]);
 
   // Screen Share & Camera Tracks Detection
-  const screenShareTracks = useTracks([Track.Source.ScreenShare], { onlySubscribed: false });
+  const screenShareTracks = useTracks([Track.Source.ScreenShare], {
+    onlySubscribed: false,
+    updateOnlyOn: [RoomEvent.TrackSubscribed, RoomEvent.TrackUnsubscribed],
+  });
   const cameraTracks = useTracks([Track.Source.Camera], { onlySubscribed: false });
 
   // Pinned/Focused Participant
@@ -1561,15 +1528,21 @@ export const MeetingRoomContent: React.FC<{
     }
   }, [remoteParticipants.length]);
 
-  const activeScreenShare = useMemo(() => {
-    // 1. Remote screen share: any remote participant with a screen share publication
-    const remoteShare = screenShareTracks.find(
+  const activeRemoteScreenShare = useMemo(() => {
+    return screenShareTracks.find(
       t => !t.participant?.isLocal && (localParticipant ? t.participant?.identity !== localParticipant.identity : true) && Boolean(t.publication)
     );
-    if (remoteShare) return remoteShare;
+  }, [screenShareTracks, localParticipant]);
+
+  const isRemotePresentationActive = Boolean(activeRemoteScreenShare);
+  const isLocalScreenSharing = Boolean(isScreenSharing || localParticipant?.isScreenShareEnabled);
+
+  const activeScreenShare = useMemo(() => {
+    // 1. Remote screen share: any remote participant with a screen share publication
+    if (activeRemoteScreenShare) return activeRemoteScreenShare;
 
     // 2. Local screen share: if local user is sharing screen
-    if (isScreenSharing) {
+    if (isLocalScreenSharing) {
       const localShare = screenShareTracks.find(
         t => (t.participant?.isLocal || (localParticipant && t.participant?.identity === localParticipant.identity))
       );
@@ -1585,12 +1558,12 @@ export const MeetingRoomContent: React.FC<{
     }
 
     return screenShareTracks.find(t => Boolean(t.publication));
-  }, [screenShareTracks, localParticipant, isScreenSharing]);
+  }, [screenShareTracks, localParticipant, isLocalScreenSharing, activeRemoteScreenShare]);
 
   // Determine if any screen share (local or remote) is currently active
   const isScreenShareActive = useMemo(() => {
-    return Boolean(isScreenSharing || activeScreenShare || isStartingScreenShareRef.current);
-  }, [isScreenSharing, activeScreenShare, isScreenShareToggling]);
+    return Boolean(isLocalScreenSharing || isRemotePresentationActive || isStartingScreenShareRef.current);
+  }, [isLocalScreenSharing, isRemotePresentationActive, isScreenShareToggling]);
 
   // Automatically switch layout to full screen when host or guest screen shares
   useEffect(() => {
@@ -1602,16 +1575,15 @@ export const MeetingRoomContent: React.FC<{
   }, [activeScreenShare]);
 
   // Synchronize Picture-in-Picture configuration with Android OS:
-  // When in meeting and screen share is OFF -> PiP enabled (auto-enter on minimize / swipe home).
-  // When screen share is ON -> PiP disabled so user can present other apps.
+  // - When meeting is minimized in-app (showing App's Home Screen), disable native PiP
+  // - When broadcaster is actively sharing screen, disable native PiP so they can present 3rd-party apps
+  // - When remote presentation is active or in normal meeting, enable native PiP
   useEffect(() => {
-    // When meeting is minimized in-app (showing App's Home Screen), disable native PiP
-    // Native PiP is enabled only when full-screen meeting is active and screen share is off
-    setPipConfig(!isMinimized, isScreenShareActive);
+    setPipConfig(!isMinimized, isLocalScreenSharing);
     return () => {
       setPipConfig(false, false);
     };
-  }, [isMinimized, isScreenShareActive]);
+  }, [isMinimized, isLocalScreenSharing]);
 
   // Intercept hardware/system back button to minimize meeting in-app and return to the App's Home Screen
   useEffect(() => {
@@ -1629,13 +1601,40 @@ export const MeetingRoomContent: React.FC<{
     return () => backHandler.remove();
   }, [isMinimized, onMinimize]);
 
+  // Track SIDs for which subscription request was already issued to prevent duplicate signaling
+  const subscribedTrackSidsRef = useRef<Set<string>>(new Set());
+
   // Auto-subscribe to remote screen share tracks as soon as they are announced
   useEffect(() => {
     screenShareTracks.forEach(t => {
       if (!t.participant?.isLocal && t.publication) {
         const remotePub = t.publication as any;
-        if (typeof remotePub.setSubscribed === 'function' && !remotePub.isSubscribed) {
-          console.log('[ScreenShare] Auto-subscribing to remote screen share track:', t.participant?.identity);
+        const trackSid = remotePub.trackSid || t.publication.trackSid;
+
+        if (__DEV__) {
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_PUBLICATION_FOUND]', {
+            identity: t.participant?.identity,
+            trackSid,
+            isSubscribed: remotePub.isSubscribed,
+            hasTrack: Boolean(remotePub.track),
+          });
+        }
+
+        if (
+          typeof remotePub.setSubscribed === 'function' &&
+          !remotePub.isSubscribed &&
+          trackSid &&
+          !subscribedTrackSidsRef.current.has(trackSid)
+        ) {
+          subscribedTrackSidsRef.current.add(trackSid);
+          if (__DEV__) {
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_SUBSCRIBE_REQUEST]', {
+              identity: t.participant?.identity,
+              trackSid,
+              isSubscribed: remotePub.isSubscribed,
+              hasTrack: Boolean(remotePub.track),
+            });
+          }
           remotePub.setSubscribed(true);
         }
         if (typeof remotePub.setEnabled === 'function' && !remotePub.isEnabled) {
@@ -1651,6 +1650,7 @@ export const MeetingRoomContent: React.FC<{
     setIsScreenSharing(Boolean(localParticipant.isScreenShareEnabled));
 
     const syncScreenShare = (pub?: any) => {
+      if (!localParticipant) return;
       // Filter out non-screen-share publications (mic, camera) so they don't interfere
       if (pub && pub.source && pub.source !== Track.Source.ScreenShare) {
         return;
@@ -1660,7 +1660,7 @@ export const MeetingRoomContent: React.FC<{
       if (!enabled) {
         // System notification "Stop Sharing" or OS single-app stop fired
         prepareScreenShare(false);
-        setPipConfig(true, false);
+        setPipConfig(!isMinimized, false);
         releaseScreenShareWakeLock();
       }
     };
@@ -1672,7 +1672,7 @@ export const MeetingRoomContent: React.FC<{
       localParticipant.off(ParticipantEvent.LocalTrackPublished, syncScreenShare);
       localParticipant.off(ParticipantEvent.LocalTrackUnpublished, syncScreenShare);
     };
-  }, [localParticipant]);
+  }, [localParticipant, isMinimized]);
 
   // Synchronize local microphone track state bidirectionally with localParticipant
   useEffect(() => {
@@ -1824,19 +1824,50 @@ export const MeetingRoomContent: React.FC<{
     })();
   }, []);
 
+  const localParticipantRef = useRef(localParticipant);
+  localParticipantRef.current = localParticipant;
+
+  const currentUserNameRef = useRef(currentUserName);
+  currentUserNameRef.current = currentUserName;
+
+  const isHostRef = useRef(isHost);
+  isHostRef.current = isHost;
+
+  const isFetchingHistoryRef = useRef(false);
+  const lastFetchedMeetingCodeRef = useRef<string | null>(null);
+
   // Fetch previous chat messages and shared files from server (for new joiners and history)
   const fetchMeetingMessages = useCallback(async () => {
     const code = meetingCode || roomName;
     if (!code) return;
 
+    if (isFetchingHistoryRef.current) {
+      return;
+    }
+    isFetchingHistoryRef.current = true;
+
+    if (__DEV__) {
+      console.log('[MEETING_CHAT_HISTORY_REQUEST]', {
+        meetingId: code,
+        roomName: roomName || '',
+        endpoint: `/meetings/${normalizeMeetingCode(code)}/messages`,
+      });
+    }
+
     try {
       const res = await getMeetingMessages(code);
       if (res.success && Array.isArray(res.data)) {
+        if (__DEV__) {
+          console.log('[MEETING_CHAT_HISTORY_SUCCESS]', {
+            meetingId: code,
+            count: res.data.length,
+          });
+        }
         const historyMessages: ChatMessage[] = res.data.map(m => {
           const isSenderSelf = Boolean(
-            (localParticipant?.name && m.sender_name === localParticipant.name) ||
-            (currentUserName && m.sender_name === currentUserName) ||
-            (isHost && (m.sender_name === 'Host' || m.sender_name === currentUserName))
+            (localParticipantRef.current?.name && m.sender_name === localParticipantRef.current.name) ||
+            (currentUserNameRef.current && m.sender_name === currentUserNameRef.current) ||
+            (isHostRef.current && (m.sender_name === 'Host' || m.sender_name === currentUserNameRef.current))
           );
           const rawTime = m.timestamp || m.created_at;
           const timeFormatted = rawTime
@@ -1864,7 +1895,7 @@ export const MeetingRoomContent: React.FC<{
           };
         });
 
-        // Merge with existing messages and deduplicate by clientMsgId, ID, and signature
+        // Merge with existing messages and deduplicate by clientMsgId, ID, and precise signature
         setMessages(prev => {
           const map = new Map<string, ChatMessage>();
           // 1. Add historical messages from database
@@ -1881,7 +1912,7 @@ export const MeetingRoomContent: React.FC<{
                 h.id === msg.id ||
                 (msg.clientMsgId && (h.clientMsgId === msg.clientMsgId || h.id === msg.clientMsgId)) ||
                 (h.clientMsgId && h.clientMsgId === msg.id) ||
-                (h.text === msg.text && h.sender === msg.sender && h.type === msg.type)
+                (h.text === msg.text && h.sender === msg.sender && h.type === msg.type && h.time === msg.time)
             );
             if (!alreadyInHistory) {
               map.set(msg.id, msg);
@@ -1889,34 +1920,52 @@ export const MeetingRoomContent: React.FC<{
           });
           return Array.from(new Set(map.values()));
         });
+        lastFetchedMeetingCodeRef.current = code;
       }
-    } catch (err) {
+    } catch (err: any) {
+      const status = err?.response?.status || err?.status || 'UNKNOWN';
+      if (__DEV__) {
+        console.warn('[MEETING_CHAT_HISTORY_FAILED]', {
+          meetingId: code,
+          status,
+          endpoint: `/meetings/${normalizeMeetingCode(code)}/messages`,
+        });
+      }
       console.warn('[MeetingRoomScreen] Error fetching meeting messages history:', err);
+    } finally {
+      isFetchingHistoryRef.current = false;
     }
-  }, [meetingCode, roomName, localParticipant, currentUserName, isHost]);
+  }, [meetingCode, roomName]);
 
-  // Load message history on mount and whenever chat drawer is opened
+  // Reset messages if switching to a completely different meeting
+  useEffect(() => {
+    const code = meetingCode || roomName;
+    if (code && lastFetchedMeetingCodeRef.current && lastFetchedMeetingCodeRef.current !== code) {
+      setMessages([]);
+    }
+  }, [meetingCode, roomName]);
+
+  // Load message history on mount
   useEffect(() => {
     fetchMeetingMessages();
   }, [fetchMeetingMessages]);
 
+  // Silently refresh message history when chat drawer is opened
   useEffect(() => {
     if (isChatOpen) {
       fetchMeetingMessages();
     }
   }, [isChatOpen, fetchMeetingMessages]);
 
-  // Refresh messages on room connected and reconnected events
+  // Refresh messages on room connected event
   useEffect(() => {
     if (!room) return;
-    const onRefreshMessages = () => {
+    const onConnected = () => {
       fetchMeetingMessages();
     };
-    room.on(RoomEvent.Connected, onRefreshMessages);
-    room.on(RoomEvent.Reconnected, onRefreshMessages);
+    room.on(RoomEvent.Connected, onConnected);
     return () => {
-      room.off(RoomEvent.Connected, onRefreshMessages);
-      room.off(RoomEvent.Reconnected, onRefreshMessages);
+      room.off(RoomEvent.Connected, onConnected);
     };
   }, [room, fetchMeetingMessages]);
 
@@ -2312,7 +2361,9 @@ export const MeetingRoomContent: React.FC<{
       // 2. Call backend API to end meeting and delete LiveKit SFU room
       try {
         if (meetingCode) {
-          await endMeeting(meetingCode);
+          await endMeeting(meetingCode, hostSessionTokenRef.current || undefined);
+          const cleanCode = meetingCode.replace(/[\s-]/g, '');
+          await storage.removeItem(`host_session_${cleanCode}`);
         }
       } catch (e) {
         console.warn('[MeetingRoomScreen] Error ending meeting on server:', e);
@@ -2624,7 +2675,7 @@ export const MeetingRoomContent: React.FC<{
                 m =>
                   (clientMsgId && (m.clientMsgId === clientMsgId || m.id === clientMsgId)) ||
                   m.id === newMessage.id ||
-                  (m.text === newMessage.text && m.sender === newMessage.sender && m.type === newMessage.type)
+                  (m.text === newMessage.text && m.sender === newMessage.sender && m.type === newMessage.type && m.time === newMessage.time)
               )
             ) {
               return prev;
@@ -2670,16 +2721,15 @@ export const MeetingRoomContent: React.FC<{
     };
 
     const handleRoomDisconnected = (reason?: any) => {
-      console.log('[MeetingRoomScreen] Room disconnected with reason:', reason);
-      setIsReconnecting(false);
+      if (__DEV__) console.log('[MeetingRoomScreen] Room disconnected with reason:', reason);
 
       if (isUserLeavingRef.current) {
         return;
       }
 
       if (isHost) {
-        // Host absolute immunity against premature ejection
-        console.log('[MeetingRoomScreen] Host disconnected event ignored for session preservation');
+        // Host absolute immunity against premature ejection: recovery is handled centrally in MeetingContext
+        if (__DEV__) console.log('[MeetingRoomScreen] Host disconnected event; session preservation active');
         return;
       }
 
@@ -2702,9 +2752,7 @@ export const MeetingRoomContent: React.FC<{
             {
               text: t('common.retry') || 'Reconnect',
               onPress: () => {
-                if (room && room.state !== ConnectionState.Connected) {
-                  setIsReconnecting(true);
-                }
+                manualReconnect();
               },
             },
           ]
@@ -2719,7 +2767,385 @@ export const MeetingRoomContent: React.FC<{
       room.off(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected);
       room.off(RoomEvent.Disconnected, handleRoomDisconnected);
     };
-  }, [room, isHost, handleMeetingEndedNotice, handleRemovedByHostNotice, onLeave, t]);
+  }, [room, isHost, handleMeetingEndedNotice, handleRemovedByHostNotice, onLeave, t, manualReconnect]);
+
+  // Diagnostic listeners for screen share lifecycle, subscriptions, and stream state
+  useEffect(() => {
+    if (!room) return;
+
+    const handleSubscriptionFailed = (trackSid: string, participant: RemoteParticipant) => {
+      console.error('[ScreenShare-Diag:SCREEN_SHARE_SUBSCRIPTION_FAILED]', {
+        trackSid,
+        participantIdentity: participant?.identity,
+      });
+    };
+
+    const handleStreamStateChanged = (
+      pub: RemoteTrackPublication,
+      streamState: Track.StreamState,
+      participant: RemoteParticipant
+    ) => {
+      if (pub?.source === Track.Source.ScreenShare) {
+        console.log('[ScreenShare-Diag:SCREEN_SHARE_STREAM_STATE_CHANGED]', {
+          trackSid: pub.trackSid,
+          participantIdentity: participant?.identity,
+          streamState,
+        });
+      }
+    };
+
+    const handleTrackPublished = (
+      publication: RemoteTrackPublication,
+      participant: RemoteParticipant
+    ) => {
+      if (publication?.source === Track.Source.ScreenShare) {
+        if (__DEV__) {
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_PUBLICATION_FOUND]', {
+            trackSid: publication.trackSid,
+            participantIdentity: participant?.identity,
+            isSubscribed: publication.isSubscribed,
+            hasTrack: Boolean(publication.track),
+          });
+        }
+      }
+    };
+
+    const handleTrackSubscribed = (
+      track: RemoteTrack,
+      publication: RemoteTrackPublication,
+      participant: RemoteParticipant
+    ) => {
+      if (publication?.source === Track.Source.ScreenShare) {
+        if (__DEV__) {
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_SUBSCRIBED]', {
+            trackSid: publication.trackSid,
+            participantIdentity: participant?.identity,
+            isSubscribed: publication.isSubscribed,
+            hasTrack: Boolean(publication.track),
+            dimensions: (track as any)?.dimensions,
+            kind: track?.kind,
+          });
+        }
+      }
+    };
+
+    room.on(RoomEvent.TrackPublished, handleTrackPublished);
+    room.on(RoomEvent.TrackSubscriptionFailed, handleSubscriptionFailed);
+    room.on(RoomEvent.TrackStreamStateChanged, handleStreamStateChanged);
+    room.on(RoomEvent.TrackSubscribed, handleTrackSubscribed);
+
+    return () => {
+      room.off(RoomEvent.TrackPublished, handleTrackPublished);
+      room.off(RoomEvent.TrackSubscriptionFailed, handleSubscriptionFailed);
+      room.off(RoomEvent.TrackStreamStateChanged, handleStreamStateChanged);
+      room.off(RoomEvent.TrackSubscribed, handleTrackSubscribed);
+    };
+  }, [room]);
+
+  // --- Screen Share Quality A/B Testing Profiles ---
+  // Switch ACTIVE_SCREEN_SHARE_PROFILE between 'test-a' and 'test-b' for comparative testing:
+  // Test A (Baseline):  H.264, 2.5 Mbps, 15 FPS, simulcast: false, maintain-resolution
+  // Test B (Candidate): H.264, 4.5 Mbps, 20 FPS, simulcast: false, maintain-resolution
+  const SCREEN_SHARE_PROFILES = {
+    'test-a': {
+      name: 'Test A (Baseline: 2.5 Mbps, 15 FPS)',
+      videoCodec: 'h264' as const,
+      simulcast: false as const,
+      screenShareEncoding: {
+        maxBitrate: 2_500_000,
+        maxFramerate: 15,
+      },
+      degradationPreference: 'maintain-resolution' as const,
+    },
+    'test-b': {
+      name: 'Test B (Candidate: 4.5 Mbps, 20 FPS)',
+      videoCodec: 'h264' as const,
+      simulcast: false as const,
+      screenShareEncoding: {
+        maxBitrate: 4_500_000,
+        maxFramerate: 20,
+      },
+      degradationPreference: 'maintain-resolution' as const,
+    },
+  };
+
+  const ACTIVE_SCREEN_SHARE_PROFILE: 'test-a' | 'test-b' = 'test-b';
+
+  const ENABLE_SCREEN_SHARE_DIAGNOSTICS = __DEV__;
+
+  // Tracing outbound WebRTC screen-share stats on broadcaster
+  useEffect(() => {
+    if (!ENABLE_SCREEN_SHARE_DIAGNOSTICS || !isScreenSharing || !localParticipant) return;
+    const shareStartTime = Date.now();
+    let prevTime = shareStartTime;
+    let prevFramesCaptured: number | null = null;
+    let prevFramesEncoded: number | null = null;
+    let prevBytesSent: number | null = null;
+
+    const interval = setInterval(async () => {
+      try {
+        const pub = localParticipant.getTrackPublication(Track.Source.ScreenShare);
+        const track = pub?.track;
+        if (track) {
+          const now = Date.now();
+          const elapsedSec = Math.round((now - shareStartTime) / 1000);
+          const deltaSec = Math.max(0.1, (now - prevTime) / 1000);
+
+          let framesCaptured: number | string = 'unavailable';
+          let captureFps: number | string = 'unavailable';
+          let framesEncoded = 0;
+          let encodeFps: number | string = 'unavailable';
+          let bytesSent = 0;
+          let bitrateKbps: number | string = 'unavailable';
+          let packetsSent = 0;
+          let resolution = `${(track as any)?.dimensions?.width ?? '?'}x${(track as any)?.dimensions?.height ?? '?'}`;
+          let encoderImplementation = 'unavailable';
+          let qualityLimitationReason = 'none';
+          let rttMs: number | string = 'unavailable';
+
+          if (typeof (track as any).getRTCStatsReport === 'function') {
+            const report = await (track as any).getRTCStatsReport();
+            if (report && typeof report.forEach === 'function') {
+              report.forEach((stat: any) => {
+                if (stat?.type === 'media-source' && (stat?.kind === 'video' || stat?.mediaType === 'video')) {
+                  if (typeof stat.frames === 'number') {
+                    framesCaptured = stat.frames;
+                    if (typeof stat.framesPerSecond === 'number') {
+                      captureFps = Math.round(stat.framesPerSecond * 10) / 10;
+                    } else if (prevFramesCaptured !== null) {
+                      captureFps = Math.round(((stat.frames - prevFramesCaptured) / deltaSec) * 10) / 10;
+                    }
+                    prevFramesCaptured = stat.frames;
+                  }
+                  if (stat.width && stat.height) {
+                    resolution = `${stat.width}x${stat.height}`;
+                  }
+                } else if (stat?.type === 'outbound-rtp' && (stat?.kind === 'video' || stat?.mediaType === 'video')) {
+                  framesEncoded = stat.framesEncoded ?? stat.framesSent ?? 0;
+                  if (typeof stat.framesPerSecond === 'number') {
+                    encodeFps = Math.round(stat.framesPerSecond * 10) / 10;
+                  } else if (prevFramesEncoded !== null) {
+                    encodeFps = Math.round(((framesEncoded - prevFramesEncoded) / deltaSec) * 10) / 10;
+                  }
+                  prevFramesEncoded = framesEncoded;
+
+                  bytesSent = stat.bytesSent ?? 0;
+                  if (prevBytesSent !== null) {
+                    bitrateKbps = Math.round(((bytesSent - prevBytesSent) * 8) / (deltaSec * 1000));
+                  }
+                  prevBytesSent = bytesSent;
+
+                  packetsSent = stat.packetsSent ?? 0;
+                  if (stat.frameWidth && stat.frameHeight) {
+                    resolution = `${stat.frameWidth}x${stat.frameHeight}`;
+                  }
+                  if (stat.encoderImplementation) {
+                    encoderImplementation = stat.encoderImplementation;
+                  }
+                  if (stat.qualityLimitationReason) {
+                    qualityLimitationReason = stat.qualityLimitationReason;
+                  }
+                } else if (stat?.type === 'remote-inbound-rtp' && (stat?.kind === 'video' || stat?.mediaType === 'video')) {
+                  if (typeof stat.roundTripTime === 'number') {
+                    rttMs = Math.round(stat.roundTripTime * 1000);
+                  }
+                } else if (stat?.type === 'candidate-pair' && (stat.state === 'succeeded' || stat.nominated)) {
+                  if (typeof stat.currentRoundTripTime === 'number' && rttMs === 'unavailable') {
+                    rttMs = Math.round(stat.currentRoundTripTime * 1000);
+                  }
+                }
+              });
+            }
+          } else if (typeof (track as any).getSenderStats === 'function') {
+            const senderStats = await (track as any).getSenderStats();
+            if (Array.isArray(senderStats) && senderStats.length > 0) {
+              const stat = senderStats[0];
+              framesEncoded = stat.framesSent ?? 0;
+              if (prevFramesEncoded !== null) {
+                encodeFps = Math.round(((framesEncoded - prevFramesEncoded) / deltaSec) * 10) / 10;
+              }
+              prevFramesEncoded = framesEncoded;
+
+              bytesSent = stat.bytesSent ?? 0;
+              if (prevBytesSent !== null) {
+                bitrateKbps = Math.round(((bytesSent - prevBytesSent) * 8) / (deltaSec * 1000));
+              }
+              prevBytesSent = bytesSent;
+
+              packetsSent = stat.packetsSent ?? 0;
+              if (stat.frameWidth && stat.frameHeight) {
+                resolution = `${stat.frameWidth}x${stat.frameHeight}`;
+              }
+            }
+          }
+
+          prevTime = now;
+
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_OUTBOUND_METRICS]', {
+            profile: ACTIVE_SCREEN_SHARE_PROFILE,
+            elapsedSec,
+            trackSid: pub?.trackSid,
+            resolution,
+            framesCaptured,
+            captureFps,
+            framesEncoded,
+            encodeFps,
+            bytesSent,
+            bitrateKbps,
+            packetsSent,
+            rttMs,
+            encoder: encoderImplementation,
+            qualityLimitationReason,
+          });
+        }
+      } catch (err) {
+        // Safe ignore
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isScreenSharing, localParticipant, windowWidth, windowHeight]);
+
+  // Tracing inbound WebRTC screen-share stats on receiver (strictly isolated to screen-share track)
+  useEffect(() => {
+    if (!ENABLE_SCREEN_SHARE_DIAGNOSTICS || !activeRemoteScreenShare) return;
+    const trackRef = activeRemoteScreenShare;
+    const receiverStartTime = Date.now();
+    let prevTime = receiverStartTime;
+    let prevFramesDecoded: number | null = null;
+    let prevBytesReceived: number | null = null;
+    let firstFrameLogged = false;
+
+    const interval = setInterval(async () => {
+      try {
+        const track = trackRef.publication?.track;
+        if (track) {
+          const now = Date.now();
+          const elapsedSec = Math.round((now - receiverStartTime) / 1000);
+          const deltaSec = Math.max(0.1, (now - prevTime) / 1000);
+
+          let framesReceived = 0;
+          let framesDecoded = 0;
+          let decodeFps: number | string = 'unavailable';
+          let bytesReceived = 0;
+          let bitrateKbps: number | string = 'unavailable';
+          let packetsLost = 0;
+          let freezeCount: number | string = 'unavailable';
+          let totalFreezeDuration: number | string = 'unavailable';
+          let resolution = `${(track as any)?.dimensions?.width ?? '?'}x${(track as any)?.dimensions?.height ?? '?'}`;
+          let decoderImplementation = 'unavailable';
+          let jitter: number | string = 'unavailable';
+          let rttMs: number | string = 'unavailable';
+
+          if (typeof (track as any).getRTCStatsReport === 'function') {
+            const report = await (track as any).getRTCStatsReport();
+            if (report && typeof report.forEach === 'function') {
+              report.forEach((stat: any) => {
+                if (stat?.type === 'inbound-rtp' && (stat?.kind === 'video' || stat?.mediaType === 'video')) {
+                  framesReceived = stat.framesReceived ?? 0;
+                  framesDecoded = stat.framesDecoded ?? 0;
+                  if (!firstFrameLogged && (framesDecoded > 0 || framesReceived > 0)) {
+                    firstFrameLogged = true;
+                    if (__DEV__) {
+                      console.log('[ScreenShare-Diag:SCREEN_SHARE_FIRST_FRAME]', {
+                        trackSid: trackRef.publication?.trackSid,
+                        framesDecoded,
+                        framesReceived,
+                        resolution,
+                        elapsedSec,
+                      });
+                    }
+                  }
+                  if (typeof stat.framesPerSecond === 'number') {
+                    decodeFps = Math.round(stat.framesPerSecond * 10) / 10;
+                  } else if (prevFramesDecoded !== null) {
+                    decodeFps = Math.round(((framesDecoded - prevFramesDecoded) / deltaSec) * 10) / 10;
+                  }
+                  prevFramesDecoded = framesDecoded;
+
+                  bytesReceived = stat.bytesReceived ?? 0;
+                  if (prevBytesReceived !== null) {
+                    bitrateKbps = Math.round(((bytesReceived - prevBytesReceived) * 8) / (deltaSec * 1000));
+                  }
+                  prevBytesReceived = bytesReceived;
+
+                  packetsLost = stat.packetsLost ?? 0;
+                  if (stat.frameWidth && stat.frameHeight) {
+                    resolution = `${stat.frameWidth}x${stat.frameHeight}`;
+                  }
+                  if (stat.decoderImplementation) {
+                    decoderImplementation = stat.decoderImplementation;
+                  }
+                  if (typeof stat.freezeCount === 'number') {
+                    freezeCount = stat.freezeCount;
+                  }
+                  const freezeDur = stat.totalFreezesDuration ?? stat.totalFreezeDuration;
+                  if (typeof freezeDur === 'number') {
+                    totalFreezeDuration = Math.round(freezeDur * 1000) / 1000;
+                  }
+                  if (typeof stat.jitter === 'number') {
+                    jitter = Math.round(stat.jitter * 1000 * 10) / 10;
+                  }
+                } else if (stat?.type === 'candidate-pair' && (stat.state === 'succeeded' || stat.nominated)) {
+                  if (typeof stat.currentRoundTripTime === 'number') {
+                    rttMs = Math.round(stat.currentRoundTripTime * 1000);
+                  }
+                }
+              });
+            }
+          } else if (typeof (track as any).getReceiverStats === 'function') {
+            const receiverStats = await (track as any).getReceiverStats();
+            if (receiverStats) {
+              framesReceived = receiverStats.framesReceived ?? 0;
+              framesDecoded = receiverStats.framesDecoded ?? 0;
+              if (prevFramesDecoded !== null) {
+                decodeFps = Math.round(((framesDecoded - prevFramesDecoded) / deltaSec) * 10) / 10;
+              }
+              prevFramesDecoded = framesDecoded;
+
+              bytesReceived = receiverStats.bytesReceived ?? 0;
+              if (prevBytesReceived !== null) {
+                bitrateKbps = Math.round(((bytesReceived - prevBytesReceived) * 8) / (deltaSec * 1000));
+              }
+              prevBytesReceived = bytesReceived;
+
+              packetsLost = receiverStats.packetsLost ?? 0;
+              if (receiverStats.frameWidth && receiverStats.frameHeight) {
+                resolution = `${receiverStats.frameWidth}x${receiverStats.frameHeight}`;
+              }
+              if (receiverStats.decoderImplementation) {
+                decoderImplementation = receiverStats.decoderImplementation;
+              }
+              if (typeof (receiverStats as any).jitter === 'number') {
+                jitter = Math.round((receiverStats as any).jitter * 1000 * 10) / 10;
+              }
+            }
+          }
+
+          prevTime = now;
+
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_INBOUND_METRICS]', {
+            elapsedSec,
+            trackSid: trackRef.publication?.trackSid,
+            resolution,
+            framesReceived,
+            framesDecoded,
+            decodeFps,
+            bytesReceived,
+            bitrateKbps,
+            packetsLost,
+            freezeCount,
+            totalFreezeDuration,
+            rttMs,
+            decoder: decoderImplementation,
+            jitter,
+          });
+        }
+      } catch (err) {
+        // Safe ignore
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [activeRemoteScreenShare]);
 
   const sendChatMessage = useCallback(async () => {
     const textToSend = chatInput.trim();
@@ -3043,14 +3469,13 @@ export const MeetingRoomContent: React.FC<{
   };
 
   const handleToggleScreenShare = async () => {
-    if (!localParticipant) return;
-    if (isTogglingScreenShareRef.current || isStartingScreenShareRef.current) {
-      console.log('[ScreenShare] Toggle or start already in progress, ignoring duplicate call');
+    if (isScreenShareActionInFlight.current || !room || !localParticipant) {
       return;
     }
 
     // Screen sharing is unavailable when alone in the meeting
-    if (allParticipants.length <= 1 && !isScreenSharing) {
+    const currentlyEnabled = Boolean(localParticipant.isScreenShareEnabled);
+    if (allParticipants.length <= 1 && !currentlyEnabled) {
       Alert.alert(
         t('meeting.screenShareUnavailableTitle'),
         t('meeting.screenShareUnavailableDesc')
@@ -3058,12 +3483,13 @@ export const MeetingRoomContent: React.FC<{
       return;
     }
 
+    isScreenShareActionInFlight.current = true;
     isTogglingScreenShareRef.current = true;
     setIsShareButtonBusy(true);
 
-    const nextSharing = !isScreenSharing;
+    const targetState = !currentlyEnabled;
     try {
-      if (nextSharing) {
+      if (targetState) {
         // 1. Immediately disable Android OS PiP auto-enter before calling LiveKit so Android 14/15 system dialog does not trigger PiP
         isStartingScreenShareRef.current = true;
         prepareScreenShare(true);
@@ -3089,10 +3515,53 @@ export const MeetingRoomContent: React.FC<{
 
         // Dedicated try-catch to silently catch user cancellation on iOS ReplayKit and Android MediaProjection
         try {
-          // Clean invocation without web-only constraints that break React Native Android getDisplayMedia
-          await localParticipant.setScreenShareEnabled(true);
+          const profile = SCREEN_SHARE_PROFILES[ACTIVE_SCREEN_SHARE_PROFILE];
+          const publishOptions: TrackPublishOptions = {
+            videoCodec: profile.videoCodec,
+            simulcast: profile.simulcast,
+            screenShareEncoding: profile.screenShareEncoding,
+            degradationPreference: profile.degradationPreference,
+          };
+          if (__DEV__) {
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_PUBLISH_START]', {
+              profile: ACTIVE_SCREEN_SHARE_PROFILE,
+              profileName: profile.name,
+              localParticipantIdentity: localParticipant.identity,
+              source: Track.Source.ScreenShare,
+              requestedCodec: publishOptions.videoCodec,
+              screenShareEncoding: publishOptions.screenShareEncoding,
+              degradationPreference: publishOptions.degradationPreference,
+            });
+          }
+          const pub = await room.localParticipant.setScreenShareEnabled(
+            targetState,
+            undefined,
+            publishOptions
+          );
+          if (__DEV__) {
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_PERMISSION_GRANTED]');
+            const localTrack = pub?.track;
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_TRACK_CREATED]', {
+              trackSid: pub?.trackSid,
+              trackDimensions: (localTrack as any)?.dimensions,
+              readyState: (localTrack as any)?.mediaStreamTrack?.readyState,
+              enabled: (localTrack as any)?.mediaStreamTrack?.enabled,
+              source: pub?.source,
+              codecConfiguration: publishOptions.videoCodec,
+            });
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_PUBLISHED]', {
+              trackSid: pub?.trackSid,
+              isPublished: Boolean(pub),
+              isSubscribed: (pub as any)?.isSubscribed,
+              trackExists: pub?.track !== null,
+              mimeType: (pub as any)?.mimeType,
+              dimensions: (pub as any)?.dimensions,
+            });
+          }
         } catch (shareErr: any) {
-          console.error('Failed to start screen share:', shareErr);
+          if (__DEV__) {
+            console.error('[ScreenShare-Diag:SCREEN_SHARE_PUBLISH_FAILED]', shareErr);
+          }
           const errMsg = (shareErr?.message || shareErr?.name || String(shareErr) || '').toLowerCase();
 
           // Silently handle user cancellation on both iOS (ReplayKit cancel) and Android (MediaProjection cancel)
@@ -3108,7 +3577,7 @@ export const MeetingRoomContent: React.FC<{
 
           isStartingScreenShareRef.current = false;
           prepareScreenShare(false);
-          setPipConfig(true, false);
+          setPipConfig(!isMinimized, false);
           setIsScreenSharing(false);
           releaseScreenShareWakeLock();
 
@@ -3124,7 +3593,7 @@ export const MeetingRoomContent: React.FC<{
 
         isStartingScreenShareRef.current = false;
         setIsScreenSharing(true);
-        setPipConfig(true, true);
+        setPipConfig(!isMinimized, true);
 
         // Stabilization delay to allow MediaProjection track and hardware encoder to produce initial keyframe smoothly
         await new Promise(resolve => setTimeout(resolve, 450));
@@ -3142,7 +3611,7 @@ export const MeetingRoomContent: React.FC<{
         isStartingScreenShareRef.current = false;
         prepareScreenShare(false);
         try {
-          await localParticipant.setScreenShareEnabled(false);
+          await room.localParticipant.setScreenShareEnabled(false);
         } finally {
           setIsScreenSharing(false);
           setPipConfig(true, false);
@@ -3160,15 +3629,15 @@ export const MeetingRoomContent: React.FC<{
           }
         }
       }
-    } catch (e: any) {
-      console.error('[ScreenShare] Error:', e);
+    } catch (error: any) {
+      console.warn('[ScreenShare] Toggle operation failed:', error);
       isStartingScreenShareRef.current = false;
       prepareScreenShare(false);
       setPipConfig(true, false);
       setIsScreenSharing(false);
       releaseScreenShareWakeLock();
 
-      const msg = (e?.message || e?.name || String(e) || '').toLowerCase();
+      const msg = (error?.message || error?.name || String(error) || '').toLowerCase();
       // Gracefully handle user cancelling the OS media projection prompt without loop
       if (
         msg.includes('cancel') ||
@@ -3188,11 +3657,9 @@ export const MeetingRoomContent: React.FC<{
       );
     } finally {
       isStartingScreenShareRef.current = false;
-      // Release toggle lock with 1000ms buffer to debounce double-taps
-      setTimeout(() => {
-        isTogglingScreenShareRef.current = false;
-        setIsShareButtonBusy(false);
-      }, 1000);
+      isScreenShareActionInFlight.current = false;
+      isTogglingScreenShareRef.current = false;
+      setIsShareButtonBusy(false);
     }
   };
 
@@ -3226,6 +3693,7 @@ export const MeetingRoomContent: React.FC<{
 
   // Keep phone screen awake while screen sharing is active
   useEffect(() => {
+    console.log('[WakeLock] wakeLock effect ran, isScreenSharing=' + isScreenSharing);
     if (isScreenSharing) {
       acquireScreenShareWakeLock();
     } else {
@@ -3607,16 +4075,6 @@ export const MeetingRoomContent: React.FC<{
         </View>
       )}
 
-      {/* --- RECONNECTING STATUS BADGE --- */}
-      {(isReconnecting || room.state === ConnectionState.Reconnecting) && (
-        <View style={[styles.reconnectingPill, { top: insets.top + 54 }]}>
-          <ActivityIndicator size="small" color="#00A8FF" />
-          <Text style={styles.reconnectingPillText}>
-            {t('meeting.reconnecting') || 'Reconnecting...'}
-          </Text>
-        </View>
-      )}
-
       {/* --- TOP HEADER --- */}
       {!isNativePip && (
         <Animated.View
@@ -3687,7 +4145,7 @@ export const MeetingRoomContent: React.FC<{
       )}
 
       {/* --- FLOATING RECONNECTING BANNER (Zoom-Style Non-Blocking Auto-Recovery) --- */}
-      {isReconnecting && (
+      {isReconnectingUI && room.state !== ConnectionState.Connected && (
         <View
           style={[
             styles.reconnectingBanner,
@@ -3699,7 +4157,7 @@ export const MeetingRoomContent: React.FC<{
         >
           <ActivityIndicator color="#FFFFFF" size="small" style={{ marginRight: 8 }} />
           <Text style={styles.reconnectingText}>
-            {t('meeting.reconnecting') || '正在重新连接会议... (Reconnecting...)'}
+            {t('meeting.reconnecting') || 'Reconnecting to meeting...'}
           </Text>
         </View>
       )}
@@ -3750,29 +4208,34 @@ export const MeetingRoomContent: React.FC<{
         ]}
       >
         {activeScreenShare && !isGridMode ? (
-          <ScreenShareView
-            track={activeScreenShare}
-            insets={insets}
-            showControls={isNativePip ? false : showControls}
-            isGridMode={isGridMode}
-            onToggleLayout={handleToggleLayout}
-            onAudioPress={() => {
-              resetControlsTimer();
-              fetchAudioOutputs(false);
-              setIsAudioModalOpen(true);
-            }}
-            renderAudioIcon={renderCurrentAudioIcon}
-            onPress={handleScreenTap}
-            onStopScreenShare={() => {
-              if (isScreenShareTogglingRef.current) return;
-              handleToggleScreenShare();
-            }}
-            isSelf={Boolean(
-              isScreenSharing ||
-              activeScreenShare.participant?.isLocal ||
-              (localParticipant && activeScreenShare.participant?.identity === localParticipant.identity)
-            )}
-          />
+          <View style={[styles.presentationContainer, { paddingTop: insets.top }]}>
+            {/* Dedicated Presentation Stage: Takes 100% available presentation area */}
+            <View style={styles.screenShareStageContainer}>
+              <ScreenShareStage
+                track={activeScreenShare}
+                insets={insets}
+                showControls={isNativePip ? false : showControls}
+                isGridMode={isGridMode}
+                onToggleLayout={handleToggleLayout}
+                onAudioPress={() => {
+                  resetControlsTimer();
+                  fetchAudioOutputs(false);
+                  setIsAudioModalOpen(true);
+                }}
+                renderAudioIcon={renderCurrentAudioIcon}
+                onPress={handleScreenTap}
+                onStopScreenShare={() => {
+                  if (isScreenShareTogglingRef.current) return;
+                  handleToggleScreenShare();
+                }}
+                isSelf={Boolean(
+                  isScreenSharing ||
+                  activeScreenShare.participant?.isLocal ||
+                  (localParticipant && activeScreenShare.participant?.identity === localParticipant.identity)
+                )}
+              />
+            </View>
+          </View>
         ) : !isGridMode && activeMeetingParticipants.length === 1 ? (
           <ParticipantCard
             key={`solo-${activeMeetingParticipants[0]?.identity || 'local'}`}
@@ -4383,6 +4846,15 @@ export const MeetingRoomContent: React.FC<{
         </Animated.View>
       )}
 
+      {/* --- UNIFIED FULL-SCREEN TAP-TO-SHOW-CONTROLS SURFACE --- */}
+      {!showControls && !isNativePip && !isMinimized && (
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={handleScreenTap}
+          style={styles.fullScreenTapSurface}
+        />
+      )}
+
       {/* --- MEETING INFO MODAL --- */}
       <Modal
         visible={!isNativePip && isInfoModalOpen}
@@ -4741,6 +5213,7 @@ export const MeetingRoomScreen: React.FC = () => {
     isGuest = false,
     muteAudio = false,
     muteVideo = false,
+    hostSessionToken,
   } = route.params || {};
 
   useEffect(() => {
@@ -4763,6 +5236,7 @@ export const MeetingRoomScreen: React.FC = () => {
         isGuest,
         muteAudio,
         muteVideo,
+        hostSessionToken,
       });
       navigation.navigate('Home');
     }
@@ -4777,6 +5251,7 @@ export const MeetingRoomScreen: React.FC = () => {
     isGuest,
     muteAudio,
     muteVideo,
+    hostSessionToken,
     startMeeting,
     navigation,
     activeMeeting,
@@ -4812,10 +5287,14 @@ const styles = StyleSheet.create({
     fontFamily: 'PlusJakartaSans-Bold',
   },
   contentContainer: { flex: 1, width: '100%', backgroundColor: '#050B14' },
+  fullScreenTapSurface: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 25,
+  },
   loadingOverlay: { flex: 1, backgroundColor: '#050B14', alignItems: 'center', justifyContent: 'center', gap: 15 },
   loadingText: { color: '#FFF', fontSize: 16, fontFamily: 'PlusJakartaSans-Bold' },
   subLoadingText: { color: '#64748b', fontSize: 12, fontFamily: 'PlusJakartaSans-Medium' },
-  header: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255, 255, 255, 0.06)', backgroundColor: 'rgba(5, 11, 20, 0.45)', zIndex: 20 },
+  header: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255, 255, 255, 0.06)', backgroundColor: '#050B14', zIndex: 20 },
   headerLeft: { flexDirection: 'row', gap: 8 },
   headerIconBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255, 255, 255, 0.08)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
   headerCenter: { alignItems: 'center' },
@@ -5147,6 +5626,50 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 4,
   },
+  presentationContainer: {
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#050B14',
+    flexDirection: 'column',
+    overflow: 'hidden',
+  },
+  screenShareStageContainer: {
+    flex: 1,
+    minHeight: 0,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#050B14',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  fullStageVideo: {
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
+    backgroundColor: '#050B14',
+  },
+  participantThumbnailStripWrapper: {
+    width: '100%',
+    flexGrow: 0,
+    flexShrink: 0,
+    backgroundColor: 'rgba(5, 11, 20, 0.95)',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    paddingTop: 6,
+  },
+  participantThumbnailStrip: {
+    paddingHorizontal: 10,
+    gap: 8,
+    alignItems: 'center',
+  },
+  stripParticipantCard: {
+    width: 84,
+    height: 96,
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
   screenShareStopBadgeBtnText: {
     color: '#FFF',
     fontSize: 12,
@@ -5395,7 +5918,7 @@ const styles = StyleSheet.create({
   gridAvatarNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 10, paddingHorizontal: 8 },
   gridAvatarName: { color: '#FFFFFF', fontSize: 15, fontFamily: 'PlusJakartaSans-Bold', letterSpacing: -0.2 },
   roleSubtext: { color: '#94a3b8', fontSize: 9, marginTop: 8, fontFamily: 'PlusJakartaSans-Medium' },
-  footer: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(5, 11, 20, 0.45)', zIndex: 20 },
+  footer: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#050B14', borderTopWidth: 1, borderTopColor: 'rgba(255, 255, 255, 0.06)', zIndex: 20 },
   controlsDock: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingTop: 10 },
   controlItem: { alignItems: 'center', gap: 6 },
   controlIconBox: { width: 48, height: 48, borderRadius: 16, backgroundColor: 'rgba(255, 255, 255, 0.08)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },

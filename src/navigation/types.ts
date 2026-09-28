@@ -20,6 +20,7 @@ export type RootStackParamList = {
     meetingTitle?: string;
     muteAudio?: boolean;
     muteVideo?: boolean;
+    hostSessionToken?: string;
   };
 };
 

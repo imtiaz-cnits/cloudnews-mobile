@@ -32,6 +32,7 @@ export async function acquireScreenShareWakeLock(): Promise<void> {
  * system screen timeout behavior.
  */
 export async function releaseScreenShareWakeLock(): Promise<void> {
+  console.log('[WakeLock] releaseScreenShareWakeLock called from JS');
   try {
     // 1. Expo Keep Awake release
     await deactivateKeepAwake(SCREEN_SHARE_TAG);
@@ -39,14 +40,10 @@ export async function releaseScreenShareWakeLock(): Promise<void> {
     console.warn('[WakeLock] Expo deactivateKeepAwake failed:', err);
   }
 
-  // 2. Native Android PowerManager WakeLock release & MediaProjection notification cleanup
+  // 2. Native Android PowerManager WakeLock release ONLY (never touches MediaProjection)
   if (Platform.OS === 'android' && NativeModules.ScreenShareWakeLock) {
     try {
-      if (typeof NativeModules.ScreenShareWakeLock.stopScreenShare === 'function') {
-        NativeModules.ScreenShareWakeLock.stopScreenShare();
-      } else {
-        NativeModules.ScreenShareWakeLock.releaseWakeLock();
-      }
+      NativeModules.ScreenShareWakeLock.releaseWakeLock();
     } catch (err) {
       console.warn('[WakeLock] Native releaseWakeLock failed:', err);
     }

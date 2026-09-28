@@ -53,6 +53,7 @@ class ScreenShareWakeLockModule(reactContext: ReactApplicationContext) : ReactCo
 
     @ReactMethod
     fun releaseWakeLock() {
+        android.util.Log.i("ScreenCapture-Diag", "[WakeLock] ScreenShareWakeLockModule.releaseWakeLock() - releasing wake lock only")
         try {
             currentActivity?.runOnUiThread {
                 try {
@@ -71,17 +72,11 @@ class ScreenShareWakeLockModule(reactContext: ReactApplicationContext) : ReactCo
         } catch (e: Exception) {
             e.printStackTrace()
         }
-
-        // Explicitly terminate MediaProjectionService and dismiss screen sharing notifications
-        try {
-            MeetingForegroundService.stopMediaProjectionService(reactApplicationContext)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
     }
 
     @ReactMethod
     fun stopScreenShare() {
+        android.util.Log.i("ScreenCapture-Diag", "[WakeLock] ScreenShareWakeLockModule.stopScreenShare() - releasing wake lock only")
         releaseWakeLock()
     }
 
