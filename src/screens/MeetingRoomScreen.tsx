@@ -1203,13 +1203,24 @@ export const MeetingRoomContent: React.FC<{
     }
   }, [isHostParam, meetingCode]);
 
-  const isReacquiringRef = useRef<boolean>(false);
+  const isHostSessionRecoveryInFlightRef = useRef<boolean>(false);
+  const isHostHeartbeatInFlightRef = useRef<boolean>(false);
+  const lastRecoverySuccessTimestampRef = useRef<number>(0);
 
   // Controlled host session heartbeat with automatic background lease recovery
   const performHostHeartbeat = useCallback(async (isForegroundPulse: boolean = false) => {
-    if (!isHostParam || !meetingCode || isReacquiringRef.current) return;
+    if (!isHostParam || !meetingCode) return;
+
+    // Single-flight guard: do not overlap heartbeats or start a heartbeat while recovery is running
+    if (isHostHeartbeatInFlightRef.current || isHostSessionRecoveryInFlightRef.current) {
+      if (__DEV__) console.log('[MeetingRoomScreen] Host heartbeat/recovery already in-flight, skipping duplicate pulse');
+      return;
+    }
+
     const token = hostSessionTokenRef.current;
     if (!token) return;
+
+    isHostHeartbeatInFlightRef.current = true;
 
     try {
       await sendHostHeartbeat(meetingCode, token);
@@ -1221,17 +1232,32 @@ export const MeetingRoomContent: React.FC<{
 
       // When the host lease expired (e.g. background > 90s), perform controlled re-acquisition
       // using the existing acquireHostLock() rules.
-      if (errorCode === 'HOST_SESSION_INVALID' && !isReacquiringRef.current) {
-        isReacquiringRef.current = true;
+      if (errorCode === 'HOST_SESSION_INVALID') {
+        // Stale token check: if token was already rotated or recovery completed in the last 5 seconds, ignore this expired error
+        if (token !== hostSessionTokenRef.current || Date.now() - lastRecoverySuccessTimestampRef.current < 5000) {
+          if (__DEV__) console.log('[MeetingRoomScreen] Ignoring expired lease error for already rotated host token');
+          return;
+        }
+
+        // Single-flight recovery mutex
+        if (isHostSessionRecoveryInFlightRef.current) {
+          if (__DEV__) console.log('[MeetingRoomScreen] Host session recovery already in flight, skipping duplicate trigger');
+          return;
+        }
+
+        isHostSessionRecoveryInFlightRef.current = true;
         console.log('[MeetingRoomScreen] Host session lease expired; performing controlled re-acquisition...');
+
         try {
           const reacquireRes = await reacquireHostSession(meetingCode, token);
           if (reacquireRes.success && reacquireRes.data?.host_session_token) {
             const newToken = reacquireRes.data.host_session_token;
             hostSessionTokenRef.current = newToken;
+            lastRecoverySuccessTimestampRef.current = Date.now();
             const cleanCode = meetingCode.replace(/[\s-]/g, '');
             await storage.setItem(`host_session_${cleanCode}`, newToken);
             console.log('[MeetingRoomScreen] Host session successfully re-acquired with fresh token');
+            return;
           }
         } catch (reacquireErr: any) {
           const reacquireStatus = reacquireErr?.response?.status;
@@ -1247,6 +1273,7 @@ export const MeetingRoomContent: React.FC<{
               if (joinRes.success && joinRes.data?.host_session_token) {
                 const newToken = joinRes.data.host_session_token;
                 hostSessionTokenRef.current = newToken;
+                lastRecoverySuccessTimestampRef.current = Date.now();
                 await storage.setItem(`host_session_${cleanCode}`, newToken);
                 console.log('[MeetingRoomScreen] Host session successfully recovered via fallback with fresh token');
                 return;
@@ -1256,16 +1283,26 @@ export const MeetingRoomContent: React.FC<{
             }
           }
 
+          // If another concurrent recovery attempt already succeeded or rotated the token,
+          // do NOT treat HOST_ALREADY_IN_MEETING as a fatal ownership conflict.
+          const isJustRecovered = Date.now() - lastRecoverySuccessTimestampRef.current < 5000;
+          if (reacquireCode === 'HOST_ALREADY_IN_MEETING' && isJustRecovered) {
+            if (__DEV__) console.log('[MeetingRoomScreen] Suppressing duplicate HOST_ALREADY_IN_MEETING race after successful recovery');
+            return;
+          }
+
           console.warn('[MeetingRoomScreen] Host session re-acquisition failed:', reacquireErr?.response?.data || reacquireErr?.message);
           if (reacquireCode === 'MEETING_ENDED' || reacquireCode === 'HOST_ALREADY_IN_MEETING') {
             console.warn('[MeetingRoomScreen] Critical host ownership conflict:', reacquireCode);
           }
         } finally {
-          isReacquiringRef.current = false;
+          isHostSessionRecoveryInFlightRef.current = false;
         }
       } else {
         console.warn('[MeetingRoomScreen] Host heartbeat warning:', err?.response?.data || err?.message);
       }
+    } finally {
+      isHostHeartbeatInFlightRef.current = false;
     }
   }, [isHostParam, meetingCode]);
 
