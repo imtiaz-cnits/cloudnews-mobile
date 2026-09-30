@@ -71,6 +71,7 @@ import {
   UserX,
 } from 'lucide-react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { validateFileSize, formatBytes, MAX_FILE_SIZE_BYTES } from '../utils/fileValidation';
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
@@ -603,6 +604,7 @@ const ScreenShareStage: React.FC<{
   isSelf: isSelfProp,
 }) => {
   const { t } = useTranslation();
+  const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
   const isSelf = Boolean(
     isSelfProp ??
@@ -642,27 +644,38 @@ const ScreenShareStage: React.FC<{
 
     syncTrackState();
 
-    if (!pub) return;
-
-    pub.on(TrackEvent.Subscribed, syncTrackState);
-    pub.on(TrackEvent.Unsubscribed, syncTrackState);
-    pub.on(TrackEvent.SubscriptionStatusChanged, syncTrackState);
+    if (pub) {
+      pub.on(TrackEvent.Subscribed, syncTrackState);
+      pub.on(TrackEvent.Unsubscribed, syncTrackState);
+      pub.on(TrackEvent.SubscriptionStatusChanged, syncTrackState);
+    }
 
     if (participant) {
       participant.on(ParticipantEvent.TrackSubscribed, syncTrackState);
       participant.on(ParticipantEvent.TrackUnsubscribed, syncTrackState);
     }
 
+    if (room) {
+      room.on(RoomEvent.Reconnected, syncTrackState);
+      room.on(RoomEvent.Connected, syncTrackState);
+    }
+
     return () => {
-      pub.off(TrackEvent.Subscribed, syncTrackState);
-      pub.off(TrackEvent.Unsubscribed, syncTrackState);
-      pub.off(TrackEvent.SubscriptionStatusChanged, syncTrackState);
+      if (pub) {
+        pub.off(TrackEvent.Subscribed, syncTrackState);
+        pub.off(TrackEvent.Unsubscribed, syncTrackState);
+        pub.off(TrackEvent.SubscriptionStatusChanged, syncTrackState);
+      }
       if (participant) {
         participant.off(ParticipantEvent.TrackSubscribed, syncTrackState);
         participant.off(ParticipantEvent.TrackUnsubscribed, syncTrackState);
       }
+      if (room) {
+        room.off(RoomEvent.Reconnected, syncTrackState);
+        room.off(RoomEvent.Connected, syncTrackState);
+      }
     };
-  }, [track?.publication, track?.participant]);
+  }, [track?.publication, track?.participant, room]);
 
   useEffect(() => {
     console.log('[ScreenShare-Diag:SCREEN_SHARE_STAGE_MOUNTED]', {
@@ -1181,6 +1194,20 @@ export const MeetingRoomContent: React.FC<{
   const room = useRoomContext();
   const { t } = useTranslation();
 
+  // 1. Keep display awake while actively inside Meeting UI (FLAG_KEEP_SCREEN_ON via expo-keep-awake)
+  // Ensures screen does not sleep while viewing screen share or in active meeting UI.
+  // Releases keep-awake when meeting is minimized or exited, decoupled from MediaProjection and wakeLock.ts.
+  useEffect(() => {
+    if (!isMinimized) {
+      activateKeepAwakeAsync('cloudnews-meeting-screen').catch(err => {
+        if (__DEV__) console.warn('[KeepAwake] Failed to activate meeting screen awake:', err);
+      });
+      return () => {
+        deactivateKeepAwake('cloudnews-meeting-screen').catch(() => {});
+      };
+    }
+  }, [isMinimized]);
+
   const hostSessionTokenRef = useRef<string | null>(hostSessionToken || null);
   useEffect(() => {
     if (hostSessionToken) {
@@ -1437,6 +1464,8 @@ export const MeetingRoomContent: React.FC<{
   const isScreenShareTogglingRef = isTogglingScreenShareRef;
   const isStartingScreenShareRef = useRef(false);
   const isScreenShareActionInFlight = useRef(false);
+  const pendingScreenShareActionRef = useRef<'start' | 'stop' | null>(null);
+  const executeToggleScreenShareRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const screenCapturePickerRef = useRef<any>(null);
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
 
@@ -1730,6 +1759,11 @@ export const MeetingRoomContent: React.FC<{
 
   // Track SIDs for which subscription request was already issued to prevent duplicate signaling
   const subscribedTrackSidsRef = useRef<Set<string>>(new Set());
+  // In-flight subscription requests to avoid concurrent duplicate requests for the same track
+  const subscribingInFlightTrackSidsRef = useRef<Set<string>>(new Set());
+  // Bounded retry map for failed subscriptions (trackSid -> retry count)
+  const subscriptionRetryCountRef = useRef<Map<string, number>>(new Map());
+  const MAX_SUBSCRIPTION_RETRIES = 2;
 
   // Auto-subscribe to remote screen share tracks as soon as they are announced
   useEffect(() => {
@@ -1744,16 +1778,25 @@ export const MeetingRoomContent: React.FC<{
             trackSid,
             isSubscribed: remotePub.isSubscribed,
             hasTrack: Boolean(remotePub.track),
+            roomState: room?.state,
           });
+        }
+
+        // Only issue subscription requests when room is Connected to avoid racing signaling recovery
+        if (room?.state !== ConnectionState.Connected) {
+          return;
         }
 
         if (
           typeof remotePub.setSubscribed === 'function' &&
           !remotePub.isSubscribed &&
+          !remotePub.track &&
           trackSid &&
-          !subscribedTrackSidsRef.current.has(trackSid)
+          !subscribedTrackSidsRef.current.has(trackSid) &&
+          !subscribingInFlightTrackSidsRef.current.has(trackSid)
         ) {
           subscribedTrackSidsRef.current.add(trackSid);
+          subscribingInFlightTrackSidsRef.current.add(trackSid);
           if (__DEV__) {
             console.log('[ScreenShare-Diag:SCREEN_SHARE_SUBSCRIBE_REQUEST]', {
               identity: t.participant?.identity,
@@ -1769,7 +1812,7 @@ export const MeetingRoomContent: React.FC<{
         }
       }
     });
-  }, [screenShareTracks]);
+  }, [screenShareTracks, room?.state]);
 
   // Synchronize local screen sharing track state with system/UI
   useEffect(() => {
@@ -1886,7 +1929,7 @@ export const MeetingRoomContent: React.FC<{
           meetingTitle || roomName || 'CloudNews Meeting',
           '通话中 · 麦克风与音频已保持开启 / Meeting active · Mic & audio running'
         );
-        if (localParticipant && !isMicMutedRef.current && !localParticipant.isMicrophoneEnabled) {
+        if (localParticipant && !isMicMutedRef.current && !localParticipant.isMicrophoneEnabled && room?.state === ConnectionState.Connected) {
           console.log('[AppState] Ensuring microphone track is preserved in background');
           localParticipant.setMicrophoneEnabled(true).catch(err => {
             console.warn('[AppState] Background microphone preserve warning:', err);
@@ -1894,7 +1937,7 @@ export const MeetingRoomContent: React.FC<{
         }
       } else if (nextAppState === 'active') {
         // Returned to foreground, re-verify audio output and mic state without redundant renegotiation
-        if (localParticipant && !isMicMutedRef.current && !localParticipant.isMicrophoneEnabled) {
+        if (localParticipant && !isMicMutedRef.current && !localParticipant.isMicrophoneEnabled && room?.state === ConnectionState.Connected) {
           localParticipant.setMicrophoneEnabled(true).catch(() => {});
         }
       }
@@ -1904,7 +1947,7 @@ export const MeetingRoomContent: React.FC<{
     return () => {
       subscription.remove();
     };
-  }, [localParticipant, meetingTitle, roomName]);
+  }, [localParticipant, meetingTitle, roomName, room?.state]);
 
   const allParticipants = useMemo(() => {
     const map = new Map<string, Participant>();
@@ -2908,10 +2951,38 @@ export const MeetingRoomContent: React.FC<{
     if (!room) return;
 
     const handleSubscriptionFailed = (trackSid: string, participant: RemoteParticipant) => {
-      console.error('[ScreenShare-Diag:SCREEN_SHARE_SUBSCRIPTION_FAILED]', {
-        trackSid,
-        participantIdentity: participant?.identity,
-      });
+      // Clear in-flight marker
+      subscribingInFlightTrackSidsRef.current.delete(trackSid);
+
+      const isTransientRecovery = room.state !== ConnectionState.Connected;
+      const currentRetries = subscriptionRetryCountRef.current.get(trackSid) || 0;
+
+      if (isTransientRecovery) {
+        console.warn('[ScreenShare-Diag:SCREEN_SHARE_SUBSCRIPTION_FAILED_TRANSIENT_RECOVERY]', {
+          trackSid,
+          participantIdentity: participant?.identity,
+          roomState: room.state,
+          retryCount: currentRetries,
+        });
+      } else {
+        console.error('[ScreenShare-Diag:SCREEN_SHARE_SUBSCRIPTION_FAILED]', {
+          trackSid,
+          participantIdentity: participant?.identity,
+          roomState: room.state,
+          retryCount: currentRetries,
+        });
+      }
+
+      // If room is connected and bounded retries not exhausted, schedule a clean single retry
+      if (room.state === ConnectionState.Connected && currentRetries < MAX_SUBSCRIPTION_RETRIES) {
+        subscriptionRetryCountRef.current.set(trackSid, currentRetries + 1);
+        subscribedTrackSidsRef.current.delete(trackSid);
+        const pub = participant?.getTrackPublicationBySid(trackSid);
+        if (pub && typeof (pub as any).setSubscribed === 'function' && !pub.isSubscribed) {
+          subscribingInFlightTrackSidsRef.current.add(trackSid);
+          (pub as any).setSubscribed(true);
+        }
+      }
     };
 
     const handleStreamStateChanged = (
@@ -2950,6 +3021,9 @@ export const MeetingRoomContent: React.FC<{
       participant: RemoteParticipant
     ) => {
       if (publication?.source === Track.Source.ScreenShare) {
+        subscribingInFlightTrackSidsRef.current.delete(publication.trackSid);
+        subscribedTrackSidsRef.current.add(publication.trackSid);
+        subscriptionRetryCountRef.current.delete(publication.trackSid);
         if (__DEV__) {
           console.log('[ScreenShare-Diag:SCREEN_SHARE_SUBSCRIBED]', {
             trackSid: publication.trackSid,
@@ -2963,16 +3037,105 @@ export const MeetingRoomContent: React.FC<{
       }
     };
 
+    const handleTrackUnsubscribed = (
+      track: RemoteTrack,
+      publication: RemoteTrackPublication,
+      participant: RemoteParticipant
+    ) => {
+      if (publication?.source === Track.Source.ScreenShare) {
+        subscribedTrackSidsRef.current.delete(publication.trackSid);
+        subscribingInFlightTrackSidsRef.current.delete(publication.trackSid);
+        subscriptionRetryCountRef.current.delete(publication.trackSid);
+        if (__DEV__) {
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_UNSUBSCRIBED]', {
+            trackSid: publication.trackSid,
+            participantIdentity: participant?.identity,
+          });
+        }
+      }
+    };
+
+    const handleTrackUnpublished = (
+      publication: RemoteTrackPublication,
+      participant: RemoteParticipant
+    ) => {
+      if (publication?.source === Track.Source.ScreenShare) {
+        subscribedTrackSidsRef.current.delete(publication.trackSid);
+        subscribingInFlightTrackSidsRef.current.delete(publication.trackSid);
+        subscriptionRetryCountRef.current.delete(publication.trackSid);
+        if (__DEV__) {
+          console.log('[ScreenShare-Diag:SCREEN_SHARE_UNPUBLISHED]', {
+            trackSid: publication.trackSid,
+            participantIdentity: participant?.identity,
+          });
+        }
+      }
+    };
+
+    const resumeDeferredActionIfNeeded = () => {
+      if (pendingScreenShareActionRef.current) {
+        const action = pendingScreenShareActionRef.current;
+        pendingScreenShareActionRef.current = null;
+        console.log('[ScreenShare-Diag:SCREEN_SHARE_ACTION_RESUMED_AFTER_SIGNAL_CONNECTED]', {
+          timestamp: new Date().toISOString(),
+          action,
+        });
+        executeToggleScreenShareRef.current().catch(err => {
+          console.warn('[ScreenShare-Diag] Deferred screen share execution error:', err);
+        });
+      }
+    };
+
+    const handleReconnected = () => {
+      console.log('[ScreenShare-Diag:ROOM_RECONNECTED]', {
+        timestamp: new Date().toISOString(),
+        roomState: room.state,
+      });
+      // Clear in-flight states on reconnect so publications can re-subscribe cleanly
+      subscribingInFlightTrackSidsRef.current.clear();
+      subscriptionRetryCountRef.current.clear();
+
+      // For any remote screen share publication that is not yet subscribed, allow auto-subscribe
+      room.remoteParticipants.forEach(rp => {
+        rp.trackPublications.forEach(pub => {
+          if (pub.source === Track.Source.ScreenShare && !pub.isSubscribed) {
+            subscribedTrackSidsRef.current.delete(pub.trackSid);
+          }
+        });
+      });
+
+      resumeDeferredActionIfNeeded();
+    };
+
+    const handleConnectionStateChanged = (state: ConnectionState) => {
+      console.log('[ScreenShare-Diag:CONNECTION_STATE_CHANGED]', {
+        timestamp: new Date().toISOString(),
+        state,
+      });
+      if (state === ConnectionState.Connected) {
+        subscribingInFlightTrackSidsRef.current.clear();
+        resumeDeferredActionIfNeeded();
+      }
+    };
+
     room.on(RoomEvent.TrackPublished, handleTrackPublished);
+    room.on(RoomEvent.TrackUnpublished, handleTrackUnpublished);
     room.on(RoomEvent.TrackSubscriptionFailed, handleSubscriptionFailed);
     room.on(RoomEvent.TrackStreamStateChanged, handleStreamStateChanged);
     room.on(RoomEvent.TrackSubscribed, handleTrackSubscribed);
+    room.on(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed);
+    room.on(RoomEvent.Reconnected, handleReconnected);
+    room.on(RoomEvent.ConnectionStateChanged, handleConnectionStateChanged);
 
     return () => {
       room.off(RoomEvent.TrackPublished, handleTrackPublished);
+      room.off(RoomEvent.TrackUnpublished, handleTrackUnpublished);
       room.off(RoomEvent.TrackSubscriptionFailed, handleSubscriptionFailed);
       room.off(RoomEvent.TrackStreamStateChanged, handleStreamStateChanged);
       room.off(RoomEvent.TrackSubscribed, handleTrackSubscribed);
+      room.off(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed);
+      room.off(RoomEvent.Reconnected, handleReconnected);
+      room.off(RoomEvent.ConnectionStateChanged, handleConnectionStateChanged);
     };
   }, [room]);
 
@@ -3256,6 +3419,16 @@ export const MeetingRoomContent: React.FC<{
           }
 
           prevTime = now;
+
+          if (framesDecoded > 0 && !firstFrameLogged) {
+            firstFrameLogged = true;
+            console.log('[ScreenShare-Diag:SCREEN_SHARE_FIRST_FRAME_RENDERED]', {
+              elapsedSec,
+              trackSid: trackRef.publication?.trackSid,
+              resolution,
+              framesDecoded,
+            });
+          }
 
           console.log('[ScreenShare-Diag:SCREEN_SHARE_INBOUND_METRICS]', {
             elapsedSec,
@@ -3711,6 +3884,27 @@ export const MeetingRoomContent: React.FC<{
       return;
     }
 
+    // Guard against triggering screen-share media transitions or offer negotiation
+    // while LiveKit signaling is reconnecting or recovering.
+    if (room.state !== ConnectionState.Connected) {
+      const currentlyEnabled = Boolean(localParticipant.isScreenShareEnabled);
+      const targetAction = currentlyEnabled ? 'stop' : 'start';
+      pendingScreenShareActionRef.current = targetAction;
+
+      console.warn('[ScreenShare-Diag:SCREEN_SHARE_ACTION_DEFERRED_SIGNAL_RECONNECTING]', {
+        timestamp: new Date().toISOString(),
+        roomState: room.state,
+        targetAction,
+      });
+
+      Alert.alert(
+        t('meeting.reconnecting') || 'Reconnecting...',
+        t('meeting.reconnectingScreenShareNotice') ||
+          'Connection is currently recovering. Screen share action has been queued and will resume once reconnected.'
+      );
+      return;
+    }
+
     // Screen sharing is unavailable when alone in the meeting
     const currentlyEnabled = Boolean(localParticipant.isScreenShareEnabled);
     if (allParticipants.length <= 1 && !currentlyEnabled) {
@@ -3832,6 +4026,21 @@ export const MeetingRoomContent: React.FC<{
             errMsg.includes('user cancelled') ||
             errMsg.includes('user denied');
 
+          const isSignalingRecoveryError =
+            errMsg.includes('cannot send signal') ||
+            errMsg.includes('before connected') ||
+            errMsg.includes('negotiation timed out') ||
+            (room && room.state !== ConnectionState.Connected);
+
+          if (isSignalingRecoveryError) {
+            console.warn('[ScreenShare-Diag:SCREEN_SHARE_ACTION_DEFERRED_SIGNAL_RECONNECTING]', {
+              timestamp: new Date().toISOString(),
+              roomState: room?.state,
+              error: errMsg,
+            });
+            pendingScreenShareActionRef.current = 'start';
+          }
+
           isStartingScreenShareRef.current = false;
           prepareScreenShare(false);
           setPipConfig(!isMinimized, false);
@@ -3847,11 +4056,12 @@ export const MeetingRoomContent: React.FC<{
               transition: 'publishing',
               success: false,
               cancelled: isCancelled,
+              recoveryDeferred: isSignalingRecoveryError,
               error: errMsg,
             });
           }
 
-          if (!isCancelled) {
+          if (!isCancelled && !isSignalingRecoveryError) {
             const platformName = Platform.OS === 'ios' ? 'iOS / iPhone' : 'Android';
             Alert.alert(
               'Screen Share Notice',
@@ -3936,6 +4146,22 @@ export const MeetingRoomContent: React.FC<{
       releaseScreenShareWakeLock();
 
       const msg = (error?.message || error?.name || String(error) || '').toLowerCase();
+      const isSignalingRecovery =
+        msg.includes('cannot send signal') ||
+        msg.includes('before connected') ||
+        msg.includes('negotiation timed out') ||
+        (room && room.state !== ConnectionState.Connected);
+
+      if (isSignalingRecovery) {
+        console.warn('[ScreenShare-Diag:SCREEN_SHARE_ACTION_DEFERRED_SIGNAL_RECONNECTING]', {
+          timestamp: new Date().toISOString(),
+          roomState: room?.state,
+          error: msg,
+        });
+        pendingScreenShareActionRef.current = targetState ? 'start' : 'stop';
+        return;
+      }
+
       // Gracefully handle user cancelling the OS media projection prompt without loop
       if (
         msg.includes('cancel') ||
@@ -3961,6 +4187,8 @@ export const MeetingRoomContent: React.FC<{
       setIsShareButtonBusy(false);
     }
   };
+
+  executeToggleScreenShareRef.current = handleToggleScreenShare;
 
   // Automatically stop screen sharing if all other participants leave the meeting
   useEffect(() => {
